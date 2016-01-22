@@ -1,9 +1,10 @@
-import pandas as pd
-import numpy as np
 from collections import defaultdict
 import sys
 from datetime import datetime
-import time 
+import time
+
+import pandas as pd
+import numpy as np
 
 path = sys.argv[1]
 store = pd.get_store(path)
