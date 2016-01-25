@@ -75,9 +75,7 @@ local checkpoint = torch.load(opt.init_from)
 protos = checkpoint.protos
 protos.rnn:evaluate() -- put in eval mode so that dropout works properly
     
-local soft = nn.ClassNLLCriterion()
-local soft2 = nn.ClassNLLCriterion()
-protos.criterion = nn.ParallelCriterion():add(soft, 1.0):add(soft2, 1.0)
+protos.criterion = nn.ClassNLLCriterion()
 
 -- initialize the rnn state to all zeros
 gprint('creating an ' .. checkpoint.opt.init_from .. '...')
@@ -118,11 +116,10 @@ function eval_split()
     
     for i = 1, opt.num_batches do -- iterate over batches in the split
       -- fetch a batch
-      local x, y, e_x, e_y = loader:next_batch('validate')
+      local x, e_x, e_y = loader:next_batch('validate')
       if opt.gpuid >= 0 then -- ship the input arrays to GPU
         -- have to convert to float because integers can't be cuda()'d
         x = x:float():cuda()
-        y = y:float():cuda()
         e_x = e_x:float():cuda()
         e_y = e_y:float():cuda()
       end
@@ -136,9 +133,8 @@ function eval_split()
     
         rnn_state[t] = {}
         for i=1,#init_state do table.insert(rnn_state[t], lst[i]) end
-        predictions[t] = { lst[#lst- 1], lst[#lst]} -- last elements is the prediction
+        predictions[t] = lst[#lst] -- last elements is the prediction
         
-        --[[
         local sorted_y, sorted_i = torch.sort(lst[#lst], true)
         for idx=1,5 do
           if sorted_i[1][idx] == e_y[{{}, t, {}}][{1, 1}] then
@@ -146,26 +142,8 @@ function eval_split()
             break
           end
         end
-        ]]--
+        loss = loss + clones.criterion[t]:forward(predictions[t], e_y[{{}, t, {}}]:clone():view(opt.batch_size))
         
-       
-        local y_t = torch.Tensor(60*24*7):fill(0)
-        local y_t2 = torch.Tensor(60*24*7):fill(-50)
-        y_truth = y[{{}, t, {}}][{1,1}]
-        y_t[y_truth] = 0.05
-        y_t2[y_truth] = 0.0
-        local log_probs = lst[#lst- 1]:clone():double()
-        local probs = lst[#lst- 1]:clone():exp():double()
-        gnuplot.figure("probs")
-        gnuplot.title("probs")
-        gnuplot.plot({torch.Tensor(probs[1]),'-'}, {"y", y_t, '-'})
-        gnuplot.figure("logprobs")
-        gnuplot.title("logprobs")
-        gnuplot.plot({torch.Tensor(log_probs[1]),'-'}, {"y", y_t2, '-'})
-        sys.sleep(1) 
-        
-        loss = loss + clones.criterion[t]:forward(predictions[t], { y[{{}, t, {}}]:clone():view(opt.batch_size), e_y[{{}, t, {}}]:clone():view(opt.batch_size) })
-       
      end
       -- carry over lstm state
       rnn_state[0] = rnn_state[#rnn_state]
@@ -193,6 +171,9 @@ end
 
 
 -- start validation here
+
+eval_split()
+--[[
 val_losses = {}
     
 while true do
@@ -201,13 +182,11 @@ while true do
         
   local val_loss = eval_split()
   val_losses[#val_losses+1] = val_loss
-  --[[
   print ("val_losses", val_losses)
   gnuplot.figure("val losses")
   gnuplot.title("val losses")
   gnuplot.plot(torch.Tensor(val_losses))  
-  ]]--
-  
+ ]]-- 
   --[[local savefile = string.format('%s/valid_%s_%.4f.t7', opt.checkpoint_dir, opt.savefile, val_loss)
   print('saving checkpoint to ' .. savefile)
   local checkpoint = {}
@@ -223,6 +202,6 @@ while true do
   ]]--  
   
   
-end
+--end
 
 
