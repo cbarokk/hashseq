@@ -67,6 +67,7 @@ function ExternalMinibatchLoader:next_batch(mode)
     local events = seq[2]:split(",")
       
     for t=1, #events do
+       print('OH NOES! - MEANS SPLIT AND ALSO IS PART OF EVENT NAME! FIX IT!')
       local words = events[t]:split("-")
       local e = tonumber(words[2])
 

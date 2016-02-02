@@ -1,5 +1,5 @@
 '''
-Finds beacons that are similar. Like word embeddings.
+Loads TGF Beacon hackathon data into redis database.
 
 Author: Cyril.Banino-Rokkones@telenor.com, Axel.Tidemann@telenor.com
 '''
