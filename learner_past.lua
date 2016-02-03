@@ -35,7 +35,7 @@ cmd:text('Options')
 -- model params
 cmd:option('-rnn_size', 128, 'size of LSTM internal state')
 cmd:option('-num_layers', 2, 'number of layers in the LSTM')
-cmd:option('-num_events', 500, 'size of events vocabulary')
+cmd:option('-num_events', 0, 'size of events vocabulary')
 
 cmd:option('-model', 'lstm', 'lstm,gru or rnn')
 -- optimization
@@ -62,6 +62,7 @@ cmd:option('-save_every',500,'how many steps/minibatches between dumping a check
 cmd:option('-print_every',1,'how many steps/minibatches between printing out the loss')
 cmd:option('-checkpoint_dir', 'cv', 'output directory where checkpoints get written')
 cmd:option('-savefile','model','filename to autosave the checkpoint to. Will be inside checkpoint_dir/')
+cmd:option('-redis_queue_name', '', 'name of the redis queue to read from')
 -- GPU/CPU
 cmd:option('-gpuid',0,'which gpu to use. -1 = use CPU')
 cmd:text()
@@ -89,7 +90,7 @@ if opt.gpuid >= 0 then
 end
 
 -- create the data loader class  
-local loader = ExternalMinibatchLoader_past.create(opt.batch_size, opt.seq_length, opt.num_events)
+local loader = ExternalMinibatchLoader_past.create(opt.batch_size, opt.seq_length, opt.num_events, opt.redis_queue)
 if not path.exists(opt.checkpoint_dir) then lfs.mkdir(opt.checkpoint_dir) end
 
 -- define the model: prototypes for one timestep, then clone them in time

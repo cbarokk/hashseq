@@ -16,6 +16,8 @@ from functools import partial
 import pandas as pd
 import numpy as np
 import redis
+import matplotlib
+matplotlib.use('agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -71,15 +73,17 @@ def load_data(args):
     print 'Found {} train sources, {} val sources, {} unique events.'.format(len(train_sources), len(val_sources), len(event_IDs))
     return train_sources, val_sources, event_IDs
 
-def trim_data(args, data, filename='dist'):
-    histogram(data, filename)
+def trim_data(args, data, filename=False):
+    if filename:
+        histogram(data, filename)
 
     for s in data.keys():
         if not args.lower_len_seq < len(data[s]) < args.upper_len_seq:
             del data[s]
 
-    histogram(data, '{} trimmed'.format(filename))
-    print 'Trimming sequence lengths to [{},{}), keeping {} sources.'.format(args.lower_len_seq, args.upper_len_seq, len(data))
+    if filename:
+        histogram(data, '{} trimmed'.format(filename))
+    print 'Trimming sequence lengths to ({},{}), keeping {} sources.'.format(args.lower_len_seq, args.upper_len_seq, len(data))
 
 def random_source(data):
     return ','.join([ x for x in random.choice(data.values()) ])
@@ -96,12 +100,14 @@ def histogram(data, filename):
     plt.savefig('{}.png'.format(filename), dpi=300)
     plt.clf()
             
-def push(train_sources, val_sources, prefix):
+def push(train_sources, val_sources, event_IDs, prefix):
     red = redis.StrictRedis()
 
     train_queue = '{}-train'.format(prefix)
     val_queue = '{}-validate'.format(prefix)
 
+    red.set('{}-num_events', len(event_IDs))
+    
     while True:
         if red.llen(train_queue) < 1000:
             red.rpush(train_queue, random_source(train_sources))
@@ -161,8 +167,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     train_sources, val_sources, event_IDs = load_data(args)
-    trim_data(args, train_sources, 'train_sources')
-    trim_data(args, val_sources, 'val_sources')
+    trim_data(args, train_sources)
+    trim_data(args, val_sources)
     dump_id_mapping(event_IDs)
     print 'Starting to push data to redis'
-    push(train_sources, val_sources, args.queue_prefix)
+    push(train_sources, val_sources, event_IDs, args.queue_prefix)

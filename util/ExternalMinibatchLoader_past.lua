@@ -9,10 +9,10 @@ ExternalMinibatchLoader_past.__index = ExternalMinibatchLoader_past
 
 theta_size = 8
 
-function ExternalMinibatchLoader_past.create(batch_size, seq_length, num_events)
+function ExternalMinibatchLoader_past.create(batch_size, seq_length, num_events, queue_name)
     local self = {}
     setmetatable(self, ExternalMinibatchLoader_past)
-
+    
     print('reshaping tensor...')
     self.batch_size = batch_size
     self.seq_length = seq_length
@@ -25,6 +25,7 @@ function ExternalMinibatchLoader_past.create(batch_size, seq_length, num_events)
     --self.e_y = torch.IntTensor(self.batch_size, self.seq_length, 1) 
     self.e_y = torch.DoubleTensor(self.batch_size, seq_length, num_events) 
     
+    self.queue_name = queue_name
     collectgarbage()
     return self
 end
@@ -54,7 +55,7 @@ function ExternalMinibatchLoader_past.timestamp2theta(timestamp)
   return theta, date
 end
 
-function ExternalMinibatchLoader_past:next_batch(mode)
+function ExternalMinibatchLoader_past:next_batch()
   collectgarbage()
   self.y:zero()
   self.x:zero()
@@ -64,14 +65,13 @@ function ExternalMinibatchLoader_past:next_batch(mode)
   self.batch = {}
   
   for b=1, self.batch_size do
-    seq = redis_client:blpop(mode, 0)
+    seq = redis_client:blpop(self.queue_name, 0)
     table.insert(self.batch, seq[2])
     local events = seq[2]:split(",")
     
     for t=1, #events-1 do
       local words = events[t]:split("-")
       local e = tonumber(words[2])
-
       local timestamp = tonumber(words[1])
       local theta, date = ExternalMinibatchLoader_past.timestamp2theta(timestamp)
       
