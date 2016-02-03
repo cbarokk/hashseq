@@ -16,19 +16,20 @@ from functools import partial
 import pandas as pd
 import numpy as np
 import redis
+import ipdb
 
 class IncrementDict(dict):
     '''Creates an index for the elements in the dict. 
     Only adds new elements, like a set with an index.'''
-    def __init__(self, *args, **kwargs):
-        dict.__init__(self, *args, **kwargs)
+    def __init__(self):
+        dict.__init__(self)
         self.counter = 1
 
     def add(self, key):
         if key not in self:
             self[key] = self.counter
             self.counter += 1
-
+            
 def aggregate(data, aggregator, event_IDs):
     for chunk in data:
         for row in chunk.itertuples():
@@ -66,58 +67,38 @@ def load_data(args):
         val_data = get_data(where=from_to(end_train_date, end_val_date))
         aggregate(val_data, val_sources, event_IDs)
         
-    print 'Found {} train sources, {} val sources, {} events.'.format(len(train_sources), len(val_sources), len(event_IDs))
+    print 'Found {} train sources, {} val sources, {} unique events.'.format(len(train_sources), len(val_sources), len(event_IDs))
     return train_sources, val_sources, event_IDs
 
-def trim_data(len_seq, data):
-    delete = []
-    for s in data:
-        if len(data[s]) < len_seq+1:
-            delete.append(s)
-    for d in delete:
-        del data[d]
-    print '...kept {} sources'.format(len(data))
+def trim_data(args, data):
+    for s in data.keys():
+        if not args.lower_len_seq < len(data[s]) < args.upper_len_seq:
+            del data[s]
+            
+    print 'Trimming sequence lengths to [{},{}), keeping {} sources.'.format(args.lower_len_seq, args.upper_len_seq, len(data))
 
-def fetch_k_events(k, data):
-    s = random.sample(data.keys(), 1)[0]
-    if k == -1:
-        return ','.join([ str(x) for x in data[s]])
-
-    start = random.randint(0, len(data[s])-k-1) 
-    return ','.join([ str(x) for x in data[s][start:start+k]])
+def random_source(data):
+    return ','.join([ x for x in random.choice(data.values()) ])
 
 def dump_id_mapping(event_IDs):
-    f = open('event_IDs_mapping.txt','w')
-    for k,v in event_IDs.iteritems():
-        f.write(str(k) + " : "+ str(v) + "\n")
-    f.close() 
+    with open('event_IDs_mapping.txt','w') as f:
+        for k,v in event_IDs.iteritems():
+            f.write('{} : {}\n'.format(str(k), str(v)))
 
-def push(train_sources, val_sources, len_seq, prefix):
-    cnt = 0
-    fill_val = False
-    fill_train = False
+def push(train_sources, val_sources, prefix):
+    red = redis.StrictRedis()
+
+    train_queue = '{}-train'.format(prefix)
+    val_queue = '{}-validate'.format(prefix)
+
     while True:
-        if fill_train:
-            red.rpush('{}-train'.format(prefix), fetch_k_events(len_seq, train_sources))
-        if fill_val:
-            red.rpush('{}-validate'.format(prefix), fetch_k_events(len_seq, val_sources))
-        cnt = cnt + 1
-        if cnt % 1000 == 0:
-            cnt = 0
-            while True:
-                fill_val = False
-                fill_train = False
-                train_llen = red.llen('{}-train'.format(prefix))
-                val_llen = red.llen('{}-validate'.format(prefix))
-                if train_llen < 1000:
-                    fill_train = True
-                    
-                if val_llen < 1000:
-                    fill_val = True
+        if red.llen(train_queue) < 1000:
+            red.rpush(train_queue, random_source(train_sources))
+        if red.llen(val_queue) < 1000:
+            red.rpush(val_queue, random_source(val_sources))
 
-                if fill_train or fill_val:
-                    break
-                time.sleep(1.0)
+        if red.llen(train_queue) > 750 and red.llen(val_queue) > 750:
+            time.sleep(1)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -125,16 +106,24 @@ if __name__ == '__main__':
         'path',
         help='Path to HDF5 file')
     parser.add_argument(
-        '--len_seq',
-        help='Length of sequences for each device. -1 means the entire sequence.',
-        default=-1)
+        '--upper_len_seq',
+        help='Upper bound sequence length for each device.',
+        type=int,
+        default=np.inf)
+    parser.add_argument(
+        '--lower_len_seq',
+        help='Lower bound sequence length for each device.',
+        type=int,
+        default=1)
     parser.add_argument(
         '--train_days',
         help='Number of days to use for training.',
+        type=int,
         default=1)
     parser.add_argument(
         '--val_days',
         help='Number of days to use for validation.',
+        type=int,
         default=1)
     parser.add_argument(
         '--frame_table',
@@ -152,7 +141,7 @@ if __name__ == '__main__':
         '--chunk_size',
         help='Chunk size to iterate over HDF5 file',
         type=int,
-        default=5e4)
+        default=50000)
     parser.add_argument(
         '--queue_prefix',
         help='The prefix for the redis queue',
@@ -160,13 +149,10 @@ if __name__ == '__main__':
                                                    
     args = parser.parse_args()
 
-    red = redis.Redis("localhost")
-
     train_sources, val_sources, event_IDs = load_data(args)
-    if args.len_seq > 0:
-        trim_data(args.len_seq, train_sources)
-        trim_data(args.len_seq, val_sources)
+    trim_data(args, train_sources)
+    trim_data(args, val_sources)
     dump_id_mapping(event_IDs)
     print 'Starting to push data to redis'
-    push(train_sources, val_sources, args.len_seq, args.queue_prefix)
+    push(train_sources, val_sources, args.queue_prefix)
         
