@@ -16,7 +16,8 @@ from functools import partial
 import pandas as pd
 import numpy as np
 import redis
-import ipdb
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 class IncrementDict(dict):
     '''Creates an index for the elements in the dict. 
@@ -70,11 +71,14 @@ def load_data(args):
     print 'Found {} train sources, {} val sources, {} unique events.'.format(len(train_sources), len(val_sources), len(event_IDs))
     return train_sources, val_sources, event_IDs
 
-def trim_data(args, data):
+def trim_data(args, data, filename='dist'):
+    histogram(data, filename)
+
     for s in data.keys():
         if not args.lower_len_seq < len(data[s]) < args.upper_len_seq:
             del data[s]
-            
+
+    histogram(data, '{} trimmed'.format(filename))
     print 'Trimming sequence lengths to [{},{}), keeping {} sources.'.format(args.lower_len_seq, args.upper_len_seq, len(data))
 
 def random_source(data):
@@ -85,6 +89,13 @@ def dump_id_mapping(event_IDs):
         for k,v in event_IDs.iteritems():
             f.write('{} : {}\n'.format(str(k), str(v)))
 
+def histogram(data, filename):
+    sns.distplot([ len(x) for x in data.values() ], kde=False)
+    plt.title(filename)
+    plt.tight_layout()
+    plt.savefig('{}.png'.format(filename), dpi=300)
+    plt.clf()
+            
 def push(train_sources, val_sources, prefix):
     red = redis.StrictRedis()
 
@@ -150,9 +161,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     train_sources, val_sources, event_IDs = load_data(args)
-    trim_data(args, train_sources)
-    trim_data(args, val_sources)
+    trim_data(args, train_sources, 'train_sources')
+    trim_data(args, val_sources, 'val_sources')
     dump_id_mapping(event_IDs)
     print 'Starting to push data to redis'
     push(train_sources, val_sources, args.queue_prefix)
-        
