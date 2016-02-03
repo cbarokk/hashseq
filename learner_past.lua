@@ -62,7 +62,7 @@ cmd:option('-save_every',500,'how many steps/minibatches between dumping a check
 cmd:option('-print_every',1,'how many steps/minibatches between printing out the loss')
 cmd:option('-checkpoint_dir', 'cv', 'output directory where checkpoints get written')
 cmd:option('-savefile','model','filename to autosave the checkpoint to. Will be inside checkpoint_dir/')
-cmd:option('-redis_queue_name', '', 'name of the redis queue to read from')
+cmd:option('-redis_queue', '', 'name of the redis queue to read from')
 -- GPU/CPU
 cmd:option('-gpuid',0,'which gpu to use. -1 = use CPU')
 cmd:text()

@@ -161,7 +161,7 @@ if __name__ == '__main__':
         default=50000)
     parser.add_argument(
         '--queue_prefix',
-        help='The prefix for the redis queue',
+        help='The prefix of the redis queue, for train/validation queues',
         default='tacos')
                                                    
     args = parser.parse_args()

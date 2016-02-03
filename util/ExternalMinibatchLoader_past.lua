@@ -2,7 +2,7 @@
 -- Modified from https://github.com/oxford-cs-ml-2015/practical6
 -- the modification included support for train/val/test splits
 local redis = require 'redis'
-local redis_client = redis.connect('127.0.0.1', 6379)
+local redis_client = redis.connect()
 
 local ExternalMinibatchLoader_past = {}
 ExternalMinibatchLoader_past.__index = ExternalMinibatchLoader_past
@@ -65,7 +65,7 @@ function ExternalMinibatchLoader_past:next_batch()
   self.batch = {}
   
   for b=1, self.batch_size do
-    seq = redis_client:blpop(self.queue_name, 0)
+     seq = redis_client:blpop(self.queue_name, 0)
     table.insert(self.batch, seq[2])
     local events = seq[2]:split(",")
     
