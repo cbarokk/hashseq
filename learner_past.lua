@@ -177,7 +177,7 @@ function feval(x)
     grad_params:zero()
 
     ------------------ get minibatch -------------------
-    local x, y, e_x, e_y = loader:next_batch('train')
+    local x, y, e_x, e_y = loader:next_batch(opt.redis_queue)
     
     if opt.gpuid >= 0 then -- ship the input arrays to GPU
         -- have to convert to float because integers can't be cuda()'d
@@ -192,8 +192,8 @@ function feval(x)
     local loss = 0
     
     for t=1,opt.seq_length do
-      clones.rnn[t]:training() -- make sure we are in correct mode (this is cheap, sets flag)
-      local lst = clones.rnn[t]:forward{x[{{},t,{}}], e_x[{{},t,{}}], unpack(rnn_state[t-1])}
+       clones.rnn[t]:training() -- make sure we are in correct mode (this is cheap, sets flag)
+       local lst = clones.rnn[t]:forward{x[{{},t,{}}], e_x[{{},t,{}}], unpack(rnn_state[t-1])}
     
       rnn_state[t] = {}
       for i=1,#init_state do table.insert(rnn_state[t], lst[i]) end -- extract the state, without output

@@ -26,6 +26,8 @@ function ExternalMinibatchLoader_past.create(batch_size, seq_length, num_events,
     self.e_y = torch.DoubleTensor(self.batch_size, seq_length, num_events) 
     
     self.queue_name = queue_name
+    assert(queue_name:len()>0, 'You forgot to specify the redis queue name.')
+    print('Reading from redis queue: ' .. self.queue_name)
     collectgarbage()
     return self
 end
