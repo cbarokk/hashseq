@@ -88,6 +88,11 @@ def trim_data(args, data, filename=False):
 def random_source(data):
     return ','.join([ x for x in random.choice(data.values()) ])
 
+def fetch_k_events(k, data):
+    s = random.choice(data.keys())
+    start = random.randint(0, len(data[s])-k)
+    return ",".join([ str(x) for x in data[s][start:start+k]])
+
 def dump_id_mapping(event_IDs):
     with open('event_IDs_mapping.txt','w') as f:
         for k,v in event_IDs.iteritems():
@@ -100,7 +105,7 @@ def histogram(data, filename):
     plt.savefig('{}.png'.format(filename), dpi=300)
     plt.clf()
             
-def push(train_sources, val_sources, event_IDs, prefix):
+def push(train_sources, val_sources, event_IDs, prefix, k):
     red = redis.StrictRedis()
 
     train_queue = '{}-train'.format(prefix)
@@ -110,9 +115,9 @@ def push(train_sources, val_sources, event_IDs, prefix):
     
     while True:
         if red.llen(train_queue) < 1000:
-            red.rpush(train_queue, random_source(train_sources))
+            red.rpush(train_queue, fetch_k_events(k, train_sources))
         if red.llen(val_queue) < 1000:
-            red.rpush(val_queue, random_source(val_sources))
+            red.rpush(val_queue, fetch_k_events(k, val_sources))
 
         if red.llen(train_queue) > 750 and red.llen(val_queue) > 750:
             time.sleep(1)
@@ -167,8 +172,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     train_sources, val_sources, event_IDs = load_data(args)
-    trim_data(args, train_sources)
-    trim_data(args, val_sources)
+    trim_data(args, train_sources, 'train_sources')
+    trim_data(args, val_sources, 'val_sources')
     dump_id_mapping(event_IDs)
     print 'Starting to push data to redis'
-    push(train_sources, val_sources, event_IDs, args.queue_prefix)
+    push(train_sources, val_sources, event_IDs, args.queue_prefix, args.lower_len_seq+1)
