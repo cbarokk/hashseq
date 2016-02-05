@@ -45,7 +45,7 @@ def aggregate(data, aggregator, event_IDs):
 
 def from_to(start_date, end_date):
     return 'index > "{}" & index < "{}"'.format(start_date, end_date)
-        
+
 def load_data(args):
     train_sources = defaultdict(list)
     val_sources = defaultdict(list)
@@ -53,12 +53,14 @@ def load_data(args):
 
     with pd.get_store(args.path) as store:
         nrows = store.get_storer(args.frame_table).nrows
+
         start_date = store.select(args.frame_table, start=0, stop=1).index[0]
         last_date = store.select(args.frame_table, start=nrows-1, stop=nrows).index[0]
+
         end_train_date = start_date + pd.Timedelta('{} days'.format(args.train_days))
         end_val_date = end_train_date + pd.Timedelta('{} days'.format(args.val_days))
 
-        print 'There are {} rows in {}, from {} to {}.'.format(nrows, args.path, start_date, last_date)
+        print 'There are {} rows in {}, from {} to {}. Assuming file is sorted.'.format(nrows, args.path, start_date, last_date)
 
         get_data = partial(store.select, args.frame_table, columns=[args.source, args.event], chunksize=args.chunk_size)
 
@@ -85,13 +87,10 @@ def trim_data(args, data, filename=False):
         histogram(data, '{} trimmed'.format(filename))
     print 'Trimming sequence lengths to ({},{}), keeping {} sources.'.format(args.lower_len_seq, args.upper_len_seq, len(data))
 
-def random_source(data):
-    return ','.join([ x for x in random.choice(data.values()) ])
-
-def fetch_k_events(k, data):
-    s = random.choice(data.keys())
-    start = random.randint(0, len(data[s])-k)
-    return ",".join([ str(x) for x in data[s][start:start+k]])
+def fecth_k_events(k, data):
+    x = random.choice(data.values())
+    start = random.randint(0, len(x)-k)
+    return ','.join(x[start:start+k])
 
 def dump_id_mapping(event_IDs):
     with open('event_IDs_mapping.txt','w') as f:
@@ -105,21 +104,19 @@ def histogram(data, filename):
     plt.savefig('{}.png'.format(filename), dpi=300)
     plt.clf()
             
-def push(train_sources, val_sources, event_IDs, prefix, k):
+def push(train_sources, val_sources, prefix, k):
     red = redis.StrictRedis()
 
     train_queue = '{}-train'.format(prefix)
     val_queue = '{}-validate'.format(prefix)
 
-    red.set('{}-num_events', len(event_IDs))
-    
     while True:
-        if red.llen(train_queue) < 1000:
+        if red.llen(train_queue) < 10000:
             red.rpush(train_queue, fetch_k_events(k, train_sources))
-        if red.llen(val_queue) < 1000:
+        if red.llen(val_queue) < 10000:
             red.rpush(val_queue, fetch_k_events(k, val_sources))
 
-        if red.llen(train_queue) > 750 and red.llen(val_queue) > 750:
+        if red.llen(train_queue) > 9000 and red.llen(val_queue) > 9000:
             time.sleep(1)
 
 if __name__ == '__main__':
@@ -168,12 +165,11 @@ if __name__ == '__main__':
         '--queue_prefix',
         help='The prefix of the redis queue, for train/validation queues',
         default='tacos')
-                                                   
     args = parser.parse_args()
 
     train_sources, val_sources, event_IDs = load_data(args)
-    trim_data(args, train_sources, 'train_sources')
-    trim_data(args, val_sources, 'val_sources')
+    trim_data(args, train_sources)
+    trim_data(args, val_sources)
     dump_id_mapping(event_IDs)
     print 'Starting to push data to redis'
-    push(train_sources, val_sources, event_IDs, args.queue_prefix, args.lower_len_seq+1)
+    push(train_sources, val_sources, args.queue_prefix, args.lower_len_seq+1)
