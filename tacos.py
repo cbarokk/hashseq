@@ -87,7 +87,7 @@ def trim_data(args, data, filename=False):
         histogram(data, '{} trimmed'.format(filename))
     print 'Trimming sequence lengths to ({},{}), keeping {} sources.'.format(args.lower_len_seq, args.upper_len_seq, len(data))
 
-def fecth_k_events(k, data):
+def fetch_k_events(k, data):
     x = random.choice(data.values())
     start = random.randint(0, len(x)-k)
     return ','.join(x[start:start+k])
