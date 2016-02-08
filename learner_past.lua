@@ -63,6 +63,7 @@ cmd:option('-print_every',1,'how many steps/minibatches between printing out the
 cmd:option('-checkpoint_dir', 'cv', 'output directory where checkpoints get written')
 cmd:option('-savefile','model','filename to autosave the checkpoint to. Will be inside checkpoint_dir/')
 cmd:option('-redis_queue', '', 'name of the redis queue to read from')
+cmd:option('-info', '', 'small string, just to simplify viewing several plotting windows at once')
 -- GPU/CPU
 cmd:option('-gpuid',0,'which gpu to use. -1 = use CPU')
 cmd:text()
@@ -298,8 +299,8 @@ for i = 1, iterations do
   if i % opt.save_every == 0 then
     accum_train_loss = accum_train_loss / opt.save_every
     train_losses[#train_losses+1] = accum_train_loss
-    gnuplot.figure("train losses")
-    gnuplot.title("train losses")
+    gnuplot.figure('train losses')
+    gnuplot.title('train losses ' .. opt.info)
     gnuplot.plot(torch.Tensor(train_losses),'-')
     local savefile = string.format('%s/model_past_%s_%s_%s_%s_%s_epoch%.2f_%.8f.t7', opt.checkpoint_dir, opt.model, opt.num_layers, opt.rnn_size, opt.theta_weight, opt.event_weight, epoch, accum_train_loss)
     accum_train_loss = 0
