@@ -15,11 +15,8 @@ require 'util.QuadraticPenalty'
 require 'sys'
 
 require 'util.misc'
-local ExternalMinibatchLoader = require 'util.ExternalMinibatchLoader'
+local ExternalMinibatchLoader_past = require 'util.ExternalMinibatchLoader_past'
 local model_utils = require 'util.model_utils'
-local LSTM_theta = require 'model.LSTM_theta'
-local GRU_theta = require 'model.GRU_theta'
-local RNN_theta = require 'model.RNN_theta'
 
 local redis = require 'redis'
 local client = redis.connect('127.0.0.1', 6379)
@@ -35,6 +32,7 @@ cmd:option('-batch_size',50,'number of sequences to train on in parallel')
 
 cmd:option('-init_from', '', 'initialize network parameters from checkpoint at this path')
 cmd:option('-seed',123,'random number generator\'s seed')
+cmd:option('-redis_queue', '', 'name of the redis queue to read from')
 -- GPU/CPU
 cmd:option('-gpuid',0,'which gpu to use. -1 = use CPU')
 cmd:option('-verbose',1,'set to 0 to ONLY print the sampled text, no diagnostics')
@@ -69,25 +67,32 @@ if opt.gpuid >= 0 then
     end
 end
 
--- create the data loader class  
-local loader = ExternalMinibatchLoader.create(opt.batch_size, opt.seq_length)
 
 print('loading the model from checkpoint ' .. opt.init_from)
 local checkpoint = torch.load(opt.init_from)
 protos = checkpoint.protos
 protos.rnn:evaluate() -- put in eval mode so that dropout works properly
 
+local num_events = get_size_softmax_layer(protos.rnn.forwardnodes, "decoder")
+-- create the data loader class  
+local loader = ExternalMinibatchLoader_past.create(opt.batch_size, opt.seq_length, num_events, opt.redis_queue)
+
+
 -- initialize the rnn state to all zeros
-current_state = {}
-for L = 1,checkpoint.opt.num_layers do
-    -- c and h for all layers
-    local h_init = torch.zeros(opt.batch_size, checkpoint.opt.rnn_size)
-    if opt.gpuid >= 0 then h_init = h_init:cuda() end
-    table.insert(current_state, h_init:clone())
-    if checkpoint.opt.model == 'lstm' then
-        table.insert(current_state, h_init:clone())
+function init_state()
+   state={}
+    for L = 1,checkpoint.opt.num_layers do
+        -- c and h for all layers
+        local h_init = torch.zeros(opt.batch_size, checkpoint.opt.rnn_size)
+        if opt.gpuid >= 0 then h_init = h_init:cuda() end
+        table.insert(state, h_init:clone())
+        if checkpoint.opt.model == 'lstm' then
+            table.insert(state, h_init:clone())
+        end
     end
+    return state
 end
+current_state = init_state()
 state_size = #current_state
 
 -- ship the model to the GPU if desired
@@ -99,10 +104,9 @@ function dump_top_h_layer(embed_annot)
   for _,node in ipairs(protos.rnn.forwardnodes) do
     if node.data.annotations.name == embed_annot then
       local x= node.data.module.output:float()
-      --[[gnuplot.figure("hist top_h")
-      gnuplot.title("top_h")
-      gnuplot.hist(x, 100)
-      ]]--
+      -- gnuplot.figure("hist top_h")
+      -- gnuplot.title("top_h")
+      -- gnuplot.hist(x, 100)
       hash_codes_file:writeFloat(x:storage())
       
       x:cmax(0):ceil()
@@ -110,7 +114,7 @@ function dump_top_h_layer(embed_annot)
       for j=1,x:size(1) do
         local s = ""  
         x[j]:apply(function(x) s = s .. x end)
-        print ("dumping code" .. s)
+        print ("dumping code" .. s, loader.batch[j])
         client:sadd(s, loader.batch[j])
       end
       
@@ -128,21 +132,22 @@ hash_codes_file = torch.DiskFile('hash_codes.txt', 'w')
 print ("starting demo")
 while true do
   -- fetch a batch
-  local x, y, e_x, e_y = loader:next_batch('validate')
+   local x, y, e_x, e_y = loader:next_batch()
   if opt.gpuid >= 0 then -- ship the input arrays to GPU
-    -- have to convert to float because integers can't be cuda()'d
-    x = x:float():cuda()
-    y = y:float():cuda()
+     -- have to convert to float because integers can't be cuda()'d
+     x = x:float():cuda()
+     y = y:float():cuda()
     e_x = e_x:float():cuda()
     e_y = e_y:float():cuda()
   end
+  current_state = init_state()
   -- forward pass
   for t=1,opt.seq_length do
-    local lst = protos.rnn:forward{x[{{},t,{}}], e_x[{{},t,{}}], unpack(current_state)}
-    current_state = {}
+     local lst = protos.rnn:forward{x[{{},t,{}}], e_x[{{},t,{}}], unpack(current_state)}
+     current_state = {}
     for i=1,state_size do table.insert(current_state, lst[i]) end
   end
-  dump_top_h_layer('top_h_sparse', y, e_y)
+  dump_top_h_layer('top_h_sparse')
   collectgarbage()
 end
 

@@ -29,6 +29,7 @@ function GRU_theta.gru(input_size, rnn_size, n, num_events, dropout, lambda)
 
     local prev_h = inputs[L+2]
     -- the input to this layer
+
     if L == 1 then 
       theta_x = inputs[1]
       theta_embedings = nn.Linear(theta_size, embedings_size)(theta_x):annotate{name='emb_theta_lin'}

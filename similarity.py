@@ -49,6 +49,15 @@ def spike_metric(s1, s2):
 
     return S1.compare(S2)
 
+def spike_metric_matrix(sequences):
+    metric = np.zeros((len(sequences), len(sequences)))
+    for i, s1 in enumerate(sequences):
+        for j, s2 in enumerate(sequences):
+            if i != j:
+                metric[i,j] = spike_metric(s1, s2)
+    return metric
+                      
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument(

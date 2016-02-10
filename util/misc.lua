@@ -14,8 +14,8 @@ end
 
 function get_size_softmax_layer(forwardnodes, annotation)
   for _,node in ipairs(forwardnodes) do
-    if node.data.annotations.name == annotation then
-      return node.data.module.output:size()[2]
+     if node.data.annotations.name == annotation then
+      return node.data.module.weight:size(1)
     end
   end
 end
