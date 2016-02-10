@@ -23,9 +23,9 @@ require 'util.QuadraticPenalty'
 require 'util.misc'
 local ExternalMinibatchLoader_past = require 'util.ExternalMinibatchLoader_past'
 local model_utils = require 'util.model_utils'
-local LSTM_theta = require 'model.LSTM_theta'
+local LSTM_theta_past = require 'model.LSTM_theta_past'
 local GRU_theta_past = require 'model.GRU_theta_past'
-local RNN_theta = require 'model.RNN_theta'
+local RNN_theta_past = require 'model.RNN_theta_past'
 
 cmd = torch.CmdLine()
 cmd:text()
@@ -34,7 +34,7 @@ cmd:text()
 cmd:text('Options')
 -- model params
 cmd:option('-rnn_size', 128, 'size of LSTM internal state')
-cmd:option('-num_layers', 2, 'number of layers in the LSTM')
+cmd:option('-num_layers', 1, 'number of layers in the LSTM')
 cmd:option('-num_events', 0, 'size of events vocabulary')
 
 cmd:option('-model', 'lstm', 'lstm,gru or rnn')
@@ -110,11 +110,11 @@ else
     print('creating an ' .. opt.model .. ' with ' .. opt.num_layers .. ' layers')
     protos = {}
     if opt.model == 'lstm' then
-        protos.rnn = LSTM_theta.lstm(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, opt.lambda)
+        protos.rnn = LSTM_theta_past.lstm(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, opt.lambda)
     elseif opt.model == 'gru' then
         protos.rnn = GRU_theta_past.gru(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, opt.lambda)
     elseif opt.model == 'rnn' then
-        protos.rnn = RNN_theta.rnn(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, opt.lambda)
+        protos.rnn = RNN_theta_past.rnn(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, opt.lambda)
     end
     
     local crit1 = nn.DistKLDivCriterion()
@@ -194,6 +194,7 @@ function feval(x)
     
     for t=1,opt.seq_length do
        clones.rnn[t]:training() -- make sure we are in correct mode (this is cheap, sets flag)
+       
        local lst = clones.rnn[t]:forward{x[{{},t,{}}], e_x[{{},t,{}}], unpack(rnn_state[t-1])}
     
       rnn_state[t] = {}
@@ -235,9 +236,9 @@ function feval(x)
     grad_params:clamp(-opt.grad_clip, opt.grad_clip)
     
     
-    if opt.lambda > 0 then
-      for _,node in ipairs(clones.rnn[opt.seq_length].forwardnodes) do
-        if node.data.annotations.name == "top_h_sparse" then
+    for _,node in ipairs(clones.rnn[opt.seq_length].forwardnodes) do
+      if node.data.annotations.name == "top_h_sparse" then
+        if opt.lambda > 0 then
           if (node.data.module.sparsity < 0.95) then
             if (best_sparsity >= node.data.module.sparsity) then 
               patience = patience - 1 
@@ -252,10 +253,10 @@ function feval(x)
           else
             node.data.module.lambda = node.data.module.lambda*0.99
           end
-          sparsity = node.data.module.sparsity
-          sparse_loss = node.data.module.loss
-          lambda = node.data.module.lambda
         end
+        sparsity = node.data.module.sparsity
+        sparse_loss = node.data.module.loss
+        lambda = node.data.module.lambda
       end
     end 
     return loss, grad_params
