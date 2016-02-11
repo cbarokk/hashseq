@@ -107,14 +107,16 @@ function dump_top_h_layer(embed_annot)
       -- gnuplot.figure("hist top_h")
       -- gnuplot.title("top_h")
       -- gnuplot.hist(x, 100)
-      hash_codes_file:writeFloat(x:storage())
+      local h = torch.histc(x,200,-1,1)
+      -- print(h:div(h:sum()), h:sum())
+      hash_codes_file:writeFloat(h:div(h:sum()):storage())
       
       x:cmax(0):ceil()
       --sys.sleep(0.5)
       for j=1,x:size(1) do
         local s = ""  
         x[j]:apply(function(x) s = s .. x end)
-        print ("dumping code" .. s, loader.batch[j])
+        -- print ("dumping code" .. s, loader.batch[j])
         client:sadd(s, loader.batch[j])
       end
       

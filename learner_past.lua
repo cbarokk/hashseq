@@ -23,9 +23,9 @@ require 'util.QuadraticPenalty'
 require 'util.misc'
 local ExternalMinibatchLoader_past = require 'util.ExternalMinibatchLoader_past'
 local model_utils = require 'util.model_utils'
-local LSTM_theta = require 'model.LSTM_theta'
+local LSTM_theta_past = require 'model.LSTM_theta_past'
 local GRU_theta_past = require 'model.GRU_theta_past'
-local RNN_theta = require 'model.RNN_theta'
+local RNN_theta_past = require 'model.RNN_theta_past'
 
 cmd = torch.CmdLine()
 cmd:text()
@@ -45,7 +45,8 @@ cmd:option('-event_weight',1.0,'weight for loss function')
 
 cmd:option('-learning_rate',2e-3,'learning rate')
 cmd:option('-learning_rate_decay',0.97,'learning rate decay')
-cmd:option('-learning_rate_decay_after',1,'in number of epochs, when to start decaying the learning rate')
+cmd:option('-learning_rate_decay_after',1000,'in number of epochs, when to start decaying the learning rate')
+cmd:option('-learning_rate_decay_freq', 10, 'decay learning rate every X epochs')
 cmd:option('-decay_rate',0.95,'decay rate for rmsprop')
 cmd:option('-dropout',0,'dropout for regularization, used after each RNN hidden layer. 0 = no dropout')
 cmd:option('-seq_length',50,'number of timesteps to unroll for')
@@ -58,6 +59,8 @@ cmd:option('-init_from', '', 'initialize network parameters from checkpoint at t
 -- bookkeeping
 cmd:option('-seed',123,'torch manual random number generator seed')
 cmd:option('-save_every',500,'how many steps/minibatches between dumping a checkpoint')
+cmd:option('-start_lambda_after',1500,'number of epochs to start lambda, i.e. fine tuning')
+
 
 cmd:option('-print_every',1,'how many steps/minibatches between printing out the loss')
 cmd:option('-checkpoint_dir', 'cv', 'output directory where checkpoints get written')
@@ -110,11 +113,11 @@ else
     print('creating an ' .. opt.model .. ' with ' .. opt.num_layers .. ' layers')
     protos = {}
     if opt.model == 'lstm' then
-        protos.rnn = LSTM_theta.lstm(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, opt.lambda)
+        protos.rnn = LSTM_theta_past.lstm(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, opt.lambda)
     elseif opt.model == 'gru' then
         protos.rnn = GRU_theta_past.gru(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, opt.lambda)
     elseif opt.model == 'rnn' then
-        protos.rnn = RNN_theta.rnn(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, opt.lambda)
+        protos.rnn = RNN_theta_past.rnn(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, opt.lambda)
     end
     
     local crit1 = nn.DistKLDivCriterion()
@@ -235,7 +238,7 @@ function feval(x)
     grad_params:clamp(-opt.grad_clip, opt.grad_clip)
     
     
-    if opt.lambda > 0 then
+    if epoch > opt.start_lambda_after and lambda > 0 then
       for _,node in ipairs(clones.rnn[opt.seq_length].forwardnodes) do
         if node.data.annotations.name == "top_h_sparse" then
           if (node.data.module.sparsity < 0.95) then
@@ -269,6 +272,7 @@ sparse_loss = 0
 patience = opt.patience                                                                                                         
 lambda = opt.lambda
 train_losses = {}
+epoch = 0
 
 local ntrain = opt.save_every
 local optim_state = {learningRate = opt.learning_rate, alpha = opt.decay_rate}
@@ -277,9 +281,9 @@ local iterations_per_epoch = ntrain
 local loss0 = nil
 local accum_train_loss = 0    
 for i = 1, iterations do
-  local epoch = i / ntrain
+  epoch = i / ntrain
 
-	local timer = torch.Timer()
+  local timer = torch.Timer()
   local _, loss = optim.rmsprop(feval, params, optim_state)
   local time = timer:time().real
 
@@ -287,7 +291,7 @@ for i = 1, iterations do
   accum_train_loss = accum_train_loss + train_loss
   
   -- exponential learning rate decay
-  if epoch % 10 == 0 and opt.learning_rate_decay < 1 then
+  if epoch % opt.learning_rate_decay_freq == 0 and opt.learning_rate_decay < 1 then
     if epoch >= opt.learning_rate_decay_after then
       local decay_factor = opt.learning_rate_decay
       optim_state.learningRate = optim_state.learningRate * decay_factor -- decay it
@@ -299,9 +303,9 @@ for i = 1, iterations do
   if i % opt.save_every == 0 then
     accum_train_loss = accum_train_loss / opt.save_every
     train_losses[#train_losses+1] = accum_train_loss
-    gnuplot.figure('train losses')
-    gnuplot.title('train losses ' .. opt.info)
-    gnuplot.plot(torch.Tensor(train_losses),'-')
+    -- gnuplot.figure('train losses')
+    -- gnuplot.title('train losses ' .. opt.info)
+    -- gnuplot.plot(torch.Tensor(train_losses),'-')
     local savefile = string.format('%s/model_past_%s_%s_%s_%s_%s_epoch%.2f_%.8f.t7', opt.checkpoint_dir, opt.model, opt.num_layers, opt.rnn_size, opt.theta_weight, opt.event_weight, epoch, accum_train_loss)
     accum_train_loss = 0
     print('saving checkpoint to ' .. savefile)
