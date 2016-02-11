@@ -34,7 +34,7 @@ cmd:text()
 cmd:text('Options')
 -- model params
 cmd:option('-rnn_size', 128, 'size of LSTM internal state')
-cmd:option('-num_layers', 2, 'number of layers in the LSTM')
+cmd:option('-num_layers', 1, 'number of layers in the LSTM')
 cmd:option('-num_events', 0, 'size of events vocabulary')
 
 cmd:option('-model', 'lstm', 'lstm,gru or rnn')
@@ -45,13 +45,13 @@ cmd:option('-event_weight',1.0,'weight for loss function')
 
 cmd:option('-learning_rate',2e-3,'learning rate')
 cmd:option('-learning_rate_decay',0.97,'learning rate decay')
-cmd:option('-learning_rate_decay_after',1000,'in number of epochs, when to start decaying the learning rate')
+cmd:option('-learning_rate_decay_after',10,'in number of epochs, when to start decaying the learning rate')
 cmd:option('-learning_rate_decay_freq', 10, 'decay learning rate every X epochs')
 cmd:option('-decay_rate',0.95,'decay rate for rmsprop')
 cmd:option('-dropout',0,'dropout for regularization, used after each RNN hidden layer. 0 = no dropout')
 cmd:option('-seq_length',50,'number of timesteps to unroll for')
 cmd:option('-batch_size',50,'number of sequences to train on in parallel')
-cmd:option('-max_epochs',5000000,'number of full passes through the training data')
+cmd:option('-max_epochs',5000,'number of full passes through the training data')
 cmd:option('-grad_clip',5,'clip gradients at this value')
 cmd:option('-lambda', 0, 'Quadratic Penalty for regularization, used at last RNN hidden layer. 0 = no regularization')
 cmd:option('-patience', 20, 'Number of batches to wait before improved sparsity. 0 = no patience')
@@ -113,11 +113,11 @@ else
     print('creating an ' .. opt.model .. ' with ' .. opt.num_layers .. ' layers')
     protos = {}
     if opt.model == 'lstm' then
-        protos.rnn = LSTM_theta_past.lstm(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, opt.lambda)
+       protos.rnn = LSTM_theta_past.lstm(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, 0)
     elseif opt.model == 'gru' then
-        protos.rnn = GRU_theta_past.gru(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, opt.lambda)
+       protos.rnn = GRU_theta_past.gru(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, 0)
     elseif opt.model == 'rnn' then
-        protos.rnn = RNN_theta_past.rnn(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, opt.lambda)
+       protos.rnn = RNN_theta_past.rnn(theta_size, opt.rnn_size, opt.num_layers, opt.num_events, opt.dropout, 0)
     end
     
     local crit1 = nn.DistKLDivCriterion()
@@ -197,6 +197,7 @@ function feval(x)
     
     for t=1,opt.seq_length do
        clones.rnn[t]:training() -- make sure we are in correct mode (this is cheap, sets flag)
+       
        local lst = clones.rnn[t]:forward{x[{{},t,{}}], e_x[{{},t,{}}], unpack(rnn_state[t-1])}
     
       rnn_state[t] = {}
@@ -238,9 +239,9 @@ function feval(x)
     grad_params:clamp(-opt.grad_clip, opt.grad_clip)
     
     
-    if epoch > opt.start_lambda_after and lambda > 0 then
-      for _,node in ipairs(clones.rnn[opt.seq_length].forwardnodes) do
-        if node.data.annotations.name == "top_h_sparse" then
+    for _,node in ipairs(clones.rnn[opt.seq_length].forwardnodes) do
+      if node.data.annotations.name == "top_h_sparse" then
+	 if epoch > opt.start_lambda_after and opt.lambda > 0 then
           if (node.data.module.sparsity < 0.95) then
             if (best_sparsity >= node.data.module.sparsity) then 
               patience = patience - 1 
@@ -255,10 +256,10 @@ function feval(x)
           else
             node.data.module.lambda = node.data.module.lambda*0.99
           end
-          sparsity = node.data.module.sparsity
-          sparse_loss = node.data.module.loss
-          lambda = node.data.module.lambda
         end
+        sparsity = node.data.module.sparsity
+        sparse_loss = node.data.module.loss
+        lambda = node.data.module.lambda
       end
     end 
     return loss, grad_params
