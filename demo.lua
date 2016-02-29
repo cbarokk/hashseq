@@ -102,7 +102,7 @@ for line in file:lines() do
 end
 
 -- start demo
-local top_k = 2
+local top_k = 3
 local all_observations = 0
 local intervals = torch.Tensor(60*24*7):fill(0)
 
@@ -124,9 +124,9 @@ while true do
   -- forward pass
  
   print ("\nNEW RANDOM CUSTOMER (50 events)")
-  print ("------------------------------------------------------------------------------------------")
-  print("DATE                        ", "| SITE |", "| 1st GUESS", "| 2nd GUESS", "| Accuracy")
-  print ("------------------------------------------------------------------------------------------")
+  print ("----------------------------------------------------------------------------------------------------------")
+  print("DATE                        ", "| SITE |", "| 1st GUESS", "| 2nd GUESS", "| 3rd GUESS", "| Accuracy")
+  print ("----------------------------------------------------------------------------------------------------------")
     
   
     
@@ -139,7 +139,7 @@ while true do
     local ey_truth = e_y[{{}, t, {}}][{1,1}]
     
     if t == 1 then
-      print (os.date ("%c", loader.dates[t]), "| ".. mapping[ey_truth] .."|", "|***************|***************|*********")
+      print (os.date ("%c", loader.dates[t]), "| ".. mapping[ey_truth] .."|", "|***************|***************|***************|*********")
     end
 
     
@@ -165,10 +165,13 @@ while true do
     local hit = 0
     for i =1, top_k do
       if sorted_ei[1][i] == ey_truth then 
-        printtop_k[i] = colors('%{green}' .. string.format("| %s [%.1f%%]", mapping[sorted_ei[1][i]],100*sorted_ey[1][i]))
+        --printtop_k[i] = colors('%{green}' .. string.format("| %s [%.1f%%]", mapping[sorted_ei[1][i]],100*sorted_ey[1][i]))
+        printtop_k[i] = colors('%{green}' .. string.format("| %s   ", mapping[sorted_ei[1][i]]))
+        
         hit = 1
       else
-        printtop_k[i] = string.format("| %s [%.1f%%]", mapping[sorted_ei[1][i]],100*sorted_ey[1][i])
+        --printtop_k[i] = string.format("| %s [%.1f%%]", mapping[sorted_ei[1][i]],100*sorted_ey[1][i])
+        printtop_k[i] = string.format("| %s   ", mapping[sorted_ei[1][i]])
       end
     end
     printtop_k[top_k+1] = string.format('| %d%%', classification_accuracy[top_k]/(observations)*100)
@@ -234,7 +237,7 @@ while true do
     ]]--
     
       collectgarbage()
-      sys.sleep(1) 
+      sys.sleep(0.5) 
     end
   end
       

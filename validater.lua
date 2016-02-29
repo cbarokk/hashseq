@@ -28,7 +28,7 @@ cmd:text()
 cmd:text('Options')
 cmd:option('-seq_length',50,'number of timesteps to unroll for')
 cmd:option('-batch_size',30,'number of sequences to validate on in parallel')
-cmd:option('-num_batches',100,'number of batches to use for validation')
+cmd:option('-num_batches',1000,'number of batches to use for validation')
 cmd:option('-init_from', '', 'initialize network parameters from checkpoint at this path')
 cmd:option('-seed',123,'random number generator\'s seed')
 -- bookkeeping
@@ -111,8 +111,8 @@ function eval_split()
     print('evaluating classification accuracy over validation data ')
     local loss = 0
     local rnn_state = {[0] = init_state}
-    local top_k = 5
-    local classification_accuracy = torch.Tensor(top_k, opt.seq_length):fill(0)
+    local top_k = 3
+    local classification_accuracy = torch.Tensor(top_k, opt.seq_length-20):fill(0)
     
     for i = 1, opt.num_batches do -- iterate over batches in the split
       -- fetch a batch
@@ -126,7 +126,7 @@ function eval_split()
       
       local predictions = {}
       -- forward pass
-      for t=1,opt.seq_length do
+      for t=1,opt.seq_length-20 do
 
         clones.rnn[t]:evaluate() -- for dropout proper functioning
         local lst = clones.rnn[t]:forward{x[{{},t,{}}], e_x[{{},t,{}}], unpack(rnn_state[t-1])}
@@ -136,14 +136,12 @@ function eval_split()
         predictions[t] = lst[#lst] -- last elements is the prediction
         
         local sorted_y, sorted_i = torch.sort(lst[#lst], true)
-        for idx=1,5 do
+        for idx=1,top_k do
           if sorted_i[1][idx] == e_y[{{}, t, {}}][{1, 1}] then
-            classification_accuracy:sub(idx,5, t, t):add(1) 
+            classification_accuracy:sub(idx,top_k, t, t):add(1) 
             break
           end
         end
-        loss = loss + clones.criterion[t]:forward(predictions[t], e_y[{{}, t, {}}]:clone():view(opt.batch_size))
-        
      end
       -- carry over lstm state
       rnn_state[0] = rnn_state[#rnn_state]
@@ -152,20 +150,25 @@ function eval_split()
     end
     classification_accuracy:div(opt.num_batches)
     
-    print ("classification_accuracy", classification_accuracy)
     
     gnuplot.figure("classification accuracy")
     gnuplot.title("classification accuracy")
+    gnuplot.grid(true)
+    gnuplot.axis{0,40,0,1.0}
     local temp = {}
     for i=top_k, 1, -1 do
       table.insert(temp, {"top "..i, torch.Tensor(classification_accuracy[i])})
     end
     gnuplot.plot(unpack(temp))
-    sys.sleep(1000)
     
-    loss = loss / opt.seq_length / opt.num_batches
-    
-    return loss
+    gnuplot.figure("classification accuracy avg by num guesses")
+    gnuplot.title("classification accuracy avg by num guesses")
+    gnuplot.plot({classification_accuracy:clone():mean(2)})
+
+
+--    print ("classification_accuracy", torch.mean(classification_accuracy, 2))
+
+    sys.sleep(30000)
 end
 
 
@@ -173,35 +176,6 @@ end
 -- start validation here
 
 eval_split()
---[[
-val_losses = {}
-    
-while true do
-	local timer = torch.Timer()
-  local time = timer:time().real
-        
-  local val_loss = eval_split()
-  val_losses[#val_losses+1] = val_loss
-  print ("val_losses", val_losses)
-  gnuplot.figure("val losses")
-  gnuplot.title("val losses")
-  gnuplot.plot(torch.Tensor(val_losses))  
- ]]-- 
-  --[[local savefile = string.format('%s/valid_%s_%.4f.t7', opt.checkpoint_dir, opt.savefile, val_loss)
-  print('saving checkpoint to ' .. savefile)
-  local checkpoint = {}
-  checkpoint.protos = protos
-  checkpoint.opt = opt
-  checkpoint.train_losses = train_losses
-  checkpoint.val_loss = val_loss
-  checkpoint.val_losses = val_losses
-  checkpoint.i = i
-  checkpoint.epoch = epoch
-  checkpoint.vocab = loader.vocab_mapping
-  torch.save(savefile, checkpoint)
-  ]]--  
-  
-  
---end
+
 
 

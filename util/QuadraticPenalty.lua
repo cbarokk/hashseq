@@ -7,14 +7,16 @@ function QuadraticPenalty:__init(lambda, sizeAverage)
 end
 
 function QuadraticPenalty:updateOutput(input)
-  self.sparsity = input:clone():abs():mean()
+  --self.sparsity = input:clone():abs():lt(0.1):sum()/input:nElement()
+  --self.sparsity = input:clone():abs():mean()
+
   local loss = input:clone():cmul(input):mul(-1):add(1):mul(self.lambda):mean()
   self.loss = loss
   self.output = input
   --gnuplot.figure("top_h sparse")
   --gnuplot.title("top_h sparse")
   --gnuplot.hist(input, 100)
-  
+  --print ("quad pen lambda", self.lambda)
   return self.output 
 end
 

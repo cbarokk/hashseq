@@ -5,13 +5,19 @@ local GRU_theta = {}
 Creates one timestep of one GRU
 Paper reference: http://arxiv.org/pdf/1412.3555v1.pdf
 ]]--
-function GRU_theta.gru(input_size, rnn_size, n, num_events, dropout, lambda)
-  dropout = dropout or 0 
+function GRU_theta.gru()
+  local rnn_size = opt.rnn_size
+  local num_time_slots = opt.num_time_slots
+  local num_layers = opt.num_layers
+  local num_events = opt.num_events
+  local dropout = opt.dropout or 0
+  local lambda = opt.lambda
+  local encoder = opt.encoder
   -- there are n+1 inputs (hiddens on each layer and x)
   local inputs = {}
   table.insert(inputs, nn.Identity()()) -- x
   table.insert(inputs, nn.Identity()()) -- e_x
-  for L = 1,n do
+  for L = 1, num_layers do
     table.insert(inputs, nn.Identity()()) -- prev_h[L]
   end
 
@@ -25,21 +31,22 @@ function GRU_theta.gru(input_size, rnn_size, n, num_events, dropout, lambda)
   local theta_x, e_x, input_size_L
   local outputs = {}
   local embedings_size = 100
-  for L = 1,n do
+  for L = 1, opt.num_layers do
 
     local prev_h = inputs[L+2]
     -- the input to this layer
+
     if L == 1 then 
       theta_x = inputs[1]
-      theta_embedings = nn.Linear(input_size, embedings_size)(theta_x):annotate{name='emb_theta_lin'}
-      theta_embedings = nn.Sigmoid()(theta_embedings):annotate{name='emb_theta_sigm'}
+      --theta_embedings = nn.Linear(theta_size, embedings_size)(theta_x):annotate{name='emb_theta_lin'}
+      --theta_embedings = nn.Sigmoid()(theta_embedings):annotate{name='emb_theta_sigm'}
       e_x = inputs[2]
       e_embedings = nn.LookupTable(num_events, embedings_size)(e_x):annotate{name='emb_e'}
       e_embedings = nn.Reshape(embedings_size)(e_embedings)
       
-      
-      x = nn.JoinTable(2)({theta_embedings, e_embedings}) 
-      input_size_L = 2*embedings_size
+      --x = nn.JoinTable(2)({theta_embedings, e_embedings}) 
+      x = nn.JoinTable(2)({theta_x, e_embedings}) 
+      input_size_L = theta_size + embedings_size
       --x = OneHot(input_size)(inputs[1])
       --input_size_L = input_size
     else 
@@ -59,19 +66,19 @@ function GRU_theta.gru(input_size, rnn_size, n, num_events, dropout, lambda)
     -- compute new interpolated hidden state, based on the update gate
     local zh = nn.CMulTable()({update_gate, hidden_candidate})
     local zhm1 = nn.CMulTable()({nn.AddConstant(1,false)(nn.MulConstant(-1,false)(update_gate)), prev_h})
+    
     local next_h = nn.CAddTable()({zh, zhm1})
-
-    if L == n then
-      next_h = QuadraticPenalty(lambda)(next_h):annotate{name='top_h_sparse'}
-    end
 
     table.insert(outputs, next_h)
   end
--- set up the decoder
-  local top_h = outputs[#outputs]
-  if dropout > 0 then top_h = nn.Dropout(dropout)(top_h) end
+  local layer = outputs[#outputs]
   
-  local proj = nn.Linear(rnn_size, num_events)(top_h):annotate{name='decoder'}
+  if dropout > 0 then layer = nn.Dropout(dropout)(layer) end
+  local theta_pred = nn.Linear(rnn_size, num_time_slots)(layer):annotate{name='theta_pred'}
+  local logsoft_theta = nn.LogSoftMax()(theta_pred)
+  table.insert(outputs, logsoft_theta)
+  
+  local proj = nn.Linear(rnn_size, num_events)(layer):annotate{name='decoder'}
   local logsoft = nn.LogSoftMax()(proj)
   table.insert(outputs, logsoft)
   

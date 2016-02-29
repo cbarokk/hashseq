@@ -1,5 +1,6 @@
 
 -- misc utilities
+require 'gnuplot'
 
 function clone_list(tensor_list, zero_too)
     -- utility function. todo: move away to some utils file?
@@ -45,11 +46,6 @@ function smooth_probs(probs, N)
   end)
 end
   
-  
-  
-  --  sub(week_mins-self.halfW, week_mins+self.halfW):add(self.w)
-  --      self.y[b][t-1]:add(probs:sub(1, 60*24*7))
-  --      self.y[b][t-1]:add(probs:sub(60*24*7+1, 60*24*7*2))
-  --      self.y[b][t-1]:add(probs:sub(60*24*7*2+1,-1)) ]]--
-
-
+function normal_equations(X, Y)
+  return torch.inverse(X:t()*X)*X:t()*Y
+end

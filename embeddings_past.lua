@@ -111,7 +111,8 @@ local e_x = torch.IntTensor(1,1):fill(1)
 
 embed_theta_file = torch.DiskFile('embed_theta.txt', 'w')
 local start_timestamp = 1452241177
-for i = 1, 60*24*7 do -- iterate over batches in the split
+--for i = 1, 60*24*7 do -- iterate over batches in the split
+for i = 1, 2 do -- iterate over batches in the split
   local theta, date = ExternalMinibatchLoader.timestamp2theta(start_timestamp+i*60)
   x:copy(theta)
   

@@ -1,13 +1,20 @@
 
 local LSTM_theta = {}
-function LSTM_theta.lstm(input_size, rnn_size, n, num_events, dropout, lambda)
-  dropout = dropout or 0 
+function LSTM_theta.lstm()
+  local rnn_size = opt.rnn_size
+  local num_time_slots = opt.num_time_slots
+  local num_layers = opt.num_layers
+  local num_events = opt.num_events
+  local dropout = opt.dropout or 0
+  local lambda = opt.lambda
+  local encoder = opt.encoder
+  
   -- there will be 2*n+2 inputs
   local inputs = {}
   table.insert(inputs, nn.Identity()()) -- x
   table.insert(inputs, nn.Identity()()) -- e_x
 
-  for L = 1,n do
+  for L = 1,num_layers do
     table.insert(inputs, nn.Identity()()) -- prev_c[L]
     table.insert(inputs, nn.Identity()()) -- prev_h[L]
   end
@@ -15,22 +22,19 @@ function LSTM_theta.lstm(input_size, rnn_size, n, num_events, dropout, lambda)
   local theta_x, e_x, input_size_L
   local outputs = {}
   local embedings_size = 100
-  for L = 1,n do
+  for L = 1, num_layers do
     -- c,h from previos timesteps
     local prev_h = inputs[L*2+2]
     local prev_c = inputs[L*2+1]
     -- the input to this layer
     if L == 1 then 
       theta_x = inputs[1]
-      theta_embedings = nn.Linear(theta_size, embedings_size)(theta_x):annotate{name='emb_theta_lin'}
-      theta_embedings = nn.Sigmoid()(theta_embedings):annotate{name='emb_theta_sigm'}
       e_x = inputs[2]
       e_embedings = nn.LookupTable(num_events, embedings_size)(e_x):annotate{name='emb_e'}
       e_embedings = nn.Reshape(embedings_size)(e_embedings)
       
-      
-      x = nn.JoinTable(2)({theta_embedings, e_embedings}) 
-      input_size_L = 2*embedings_size
+      x = nn.JoinTable(2)({theta_x, e_embedings}) 
+      input_size_L = theta_size+embedings_size
       
     else 
       x = outputs[(L-1)*2] 
@@ -67,17 +71,33 @@ function LSTM_theta.lstm(input_size, rnn_size, n, num_events, dropout, lambda)
     table.insert(outputs, next_h)
     
   end
+  local prev_layer = outputs[#outputs]
+  local layer
+  for i=1, #encoder-1 do
+    layer = nn.Linear(encoder[i], encoder[i+1])(prev_layer)
+    layer = nn.Tanh()(layer)
+    if dropout > 0 then layer = nn.Dropout(dropout)(layer) end
+    prev_layer = layer
+    print ("encoder", encoder[i], "-->", encoder[i+1])
+  end
+  layer = QuadraticPenalty(lambda)(layer):annotate{name='hashcode'}
+  if dropout > 0 then layer = nn.Dropout(dropout)(layer) end
+  table.insert(outputs, layer)
 
-  -- set up the decoder
+  prev_layer = layer
+  for i=#encoder, 3, -1 do
+    layer = nn.Linear(encoder[i], encoder[i-1])(prev_layer)
+    layer = nn.Tanh()(layer)
+    if dropout > 0 then layer = nn.Dropout(dropout)(layer) end
+    prev_layer = layer
+    print ("decoder", encoder[i], "-->", encoder[i-1])
+  end
   
-  local top_h = outputs[#outputs]
-  if dropout > 0 then top_h = nn.Dropout(dropout)(top_h) end
-  
-  local theta_pred = nn.Linear(rnn_size, 60*24*7)(top_h):annotate{name='theta_pred'}
+  local theta_pred = nn.Linear(encoder[2], num_time_slots)(layer):annotate{name='theta_pred'}
   local logsoft_theta = nn.LogSoftMax()(theta_pred)
   table.insert(outputs, logsoft_theta)
   
-  local proj = nn.Linear(rnn_size, num_events)(top_h):annotate{name='decoder'}
+  local proj = nn.Linear(encoder[2], num_events)(layer):annotate{name='decoder'}
   local logsoft = nn.LogSoftMax()(proj)
   table.insert(outputs, logsoft)
   

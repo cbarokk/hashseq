@@ -73,7 +73,9 @@ local checkpoint = torch.load(opt.init_from)
 protos = checkpoint.protos
 protos.rnn:evaluate() -- put in eval mode so that dropout works properly
 
-local num_events = get_size_softmax_layer(protos.rnn.forwardnodes, "decoder")
+opt.num_events = get_size_softmax_layer(protos.rnn.forwardnodes, "decoder")
+opt.num_time_slots = get_size_softmax_layer(protos.rnn.forwardnodes, 'theta_pred')
+
 -- create the data loader class  
 local loader = ExternalMinibatchLoader_past.create(opt.batch_size, opt.seq_length, num_events, opt.redis_queue)
 
@@ -100,28 +102,24 @@ if opt.gpuid >= 0 then
     for k,v in pairs(protos) do v:cuda() end
 end
 
-function dump_top_h_layer(embed_annot)
-  for _,node in ipairs(protos.rnn.forwardnodes) do
-    if node.data.annotations.name == embed_annot then
-      local x= node.data.module.output:float()
-      -- gnuplot.figure("hist top_h")
-      -- gnuplot.title("top_h")
-      -- gnuplot.hist(x, 100)
-      local h = torch.histc(x,200,-1,1)
-      -- print(h:div(h:sum()), h:sum())
-      hash_codes_file:writeFloat(h:div(h:sum()):storage())
+function dump_hidden_state(h_i)
+  gnuplot.figure("hist top_h")
+  gnuplot.title("top_h")
+  gnuplot.hist(h_i, 100)
+  local h = torch.histc(h_i,200,-1,1)
+  -- print(h:div(h:sum()), h:sum())
+  hash_codes_file:writeFloat(h:div(h:sum()):storage())
       
-      x:cmax(0):ceil()
-      --sys.sleep(0.5)
-      for j=1,x:size(1) do
-        local s = ""  
-        x[j]:apply(function(x) s = s .. x end)
-        -- print ("dumping code" .. s, loader.batch[j])
-        client:sadd(s, loader.batch[j])
-      end
-      
-    end
+  h_i:cmax(0):ceil()
+  --sys.sleep(0.5)
+  for j=1,h_i:size(1) do
+    local s = ""  
+    h_i[j]:apply(function(x) s = s .. x end)
+    --print ("dumping code" .. s, loader.batch[j])
+    print ("dumping code: " .. s)
+    client:sadd(s, loader.batch[j])
   end
+  
   --sequence:apply(function(x) seq = seq .. ' ' .. x end)
   --client:hincrbyfloat(s, freq, sequence)
   --client:hmset(s, seq, freq)      
@@ -144,12 +142,13 @@ while true do
   end
   current_state = init_state()
   -- forward pass
+  local lst
   for t=1,opt.seq_length do
-     local lst = protos.rnn:forward{x[{{},t,{}}], e_x[{{},t,{}}], unpack(current_state)}
+     lst = protos.rnn:forward{x[{{},t,{}}], e_x[{{},t,{}}], unpack(current_state)}
      current_state = {}
     for i=1,state_size do table.insert(current_state, lst[i]) end
   end
-  dump_top_h_layer('top_h_sparse')
+  dump_hidden_state(lst[#lst- 2]:float())
   collectgarbage()
 end
 

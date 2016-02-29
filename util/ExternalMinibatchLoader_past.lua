@@ -9,25 +9,22 @@ ExternalMinibatchLoader_past.__index = ExternalMinibatchLoader_past
 
 theta_size = 8
 
-function ExternalMinibatchLoader_past.create(batch_size, seq_length, num_events, queue_name)
+function ExternalMinibatchLoader_past.create()
     local self = {}
     setmetatable(self, ExternalMinibatchLoader_past)
     
     print('reshaping tensor...')
-    self.batch_size = batch_size
-    self.seq_length = seq_length
-    self.x = torch.DoubleTensor(self.batch_size, self.seq_length, theta_size) 
-    self.e_x = torch.IntTensor(self.batch_size, self.seq_length, 1) 
+    self.x = torch.DoubleTensor(opt.batch_size, opt.seq_length, theta_size) 
+    self.e_x = torch.IntTensor(opt.batch_size, opt.seq_length, 1) 
     
-    self.y = torch.DoubleTensor(self.batch_size, self.seq_length, 60*24*7) 
-    --self.y = torch.Doub leTensor(self.batch_size, self.seq_length, 1) 
+    self.y = torch.DoubleTensor(opt.batch_size, opt.seq_length, opt.num_time_slots) 
+    --self.y = torch.Doub leTensor(opt.batch_size, opt.seq_length, 1) 
     
-    --self.e_y = torch.IntTensor(self.batch_size, self.seq_length, 1) 
-    self.e_y = torch.DoubleTensor(self.batch_size, seq_length, num_events) 
+    --self.e_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1) 
+    self.e_y = torch.DoubleTensor(opt.batch_size, opt.seq_length, opt.num_events) 
     
-    self.queue_name = queue_name
-    assert(queue_name:len()>0, 'You forgot to specify the redis queue name.')
-    print('Reading from redis queue: ' .. self.queue_name)
+    assert(opt.redis_queue:len()>0, 'You forgot to specify the redis queue name.')
+    print('Reading from redis queue: ' .. opt.redis_queue)
     collectgarbage()
     return self
 end
@@ -66,12 +63,11 @@ function ExternalMinibatchLoader_past:next_batch()
   
   self.batch = {}
   
-  for b=1, self.batch_size do
-     seq = redis_client:blpop(self.queue_name, 0)
+  for b=1, opt.batch_size do
+    seq = redis_client:blpop(opt.redis_queue, 0)
     table.insert(self.batch, seq[2])
     local events = seq[2]:split(",")
-    
-    for t=1, #events-1 do
+    for t=1, #events do
       local words = events[t]:split("-")
       local e = tonumber(words[2])
       local timestamp = tonumber(words[1])
@@ -79,8 +75,11 @@ function ExternalMinibatchLoader_past:next_batch()
       
       self.x[b][t]:copy(theta)
       self.e_x[b][t] = e
-      local week_mins = date['min'] + 60*date['hour'] + 60*24*(date['wday']-1) + 1 -- +1 bcs index starts at one
-      self.y[b]:sub(t, -1, week_mins, week_mins):add(t)
+      
+      local min_of_the_week = date['min'] + 60*date['hour'] + 60*24*(date['wday']-1) 
+      local time_slot = math.floor(min_of_the_week/10080*opt.num_time_slots) +1 -- +1 bcs index starts at 1 in lua 
+      
+      self.y[b]:sub(t, -1, time_slot, time_slot):fill(t*t)
       self.y[b][t]:div(self.y[b][t]:sum())
       self.e_y[b]:sub(t, -1, e, e):add(1)
       self.e_y[b][t]:div(self.e_y[b][t]:sum())

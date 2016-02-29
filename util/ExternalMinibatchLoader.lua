@@ -9,26 +9,28 @@ ExternalMinibatchLoader.__index = ExternalMinibatchLoader
 
 theta_size = 8
 
-function ExternalMinibatchLoader.create(batch_size, seq_length)
+function ExternalMinibatchLoader.create()
     local self = {}
     setmetatable(self, ExternalMinibatchLoader)
 
     print('reshaping tensor...')
-    self.batch_size = batch_size
-    self.seq_length = seq_length
-    --self.x = torch.DoubleTensor(self.batch_size, self.seq_length, theta_size) 
-    self.x = torch.DoubleTensor(self.batch_size, self.seq_length, 2*theta_size) 
+    self.batch_size = opt.batch_size
+    self.seq_length = opt.seq_length
+    self.x = torch.DoubleTensor(self.batch_size, self.seq_length, theta_size) 
     self.e_x = torch.IntTensor(self.batch_size, self.seq_length, 1) 
     
-    --self.y = torch.DoubleTensor(self.batch_size, self.seq_length, 60*24*7) 
-    --self.y = torch.DoubleTensor(self.batch_size, self.seq_length, 1) 
-    
+    self.y = torch.DoubleTensor(self.batch_size, self.seq_length, 1) 
     self.e_y = torch.IntTensor(self.batch_size, self.seq_length, 1) 
     
     collectgarbage()
     return self
 end
 
+function ExternalMinibatchLoader.criterion()
+  local crit1 = nn.ClassNLLCriterion()
+  local crit2 = nn.ClassNLLCriterion()  
+  return nn.ParallelCriterion():add(crit1, opt.theta_weight):add(crit2, opt.event_weight)
+end
 
 function ExternalMinibatchLoader.timestamp2theta(timestamp)
   local theta = torch.DoubleTensor(theta_size):fill(0)
@@ -54,16 +56,19 @@ function ExternalMinibatchLoader.timestamp2theta(timestamp)
   return theta, date
 end
 
-function ExternalMinibatchLoader:next_batch(mode)
+function ExternalMinibatchLoader:next_batch(queue)
   collectgarbage()
   self.x:zero()
   self.e_y:zero()
   self.e_x:zero()
   
   self.dates = {}
-  
+  self.batch = {}
+
   for b=1, self.batch_size do
-    seq = redis_client:blpop(mode, 0)
+    seq = redis_client:blpop(queue, 0)
+    table.insert(self.batch, seq[2])
+    
     local events = seq[2]:split(",")
       
     for t=1, #events do
@@ -81,15 +86,13 @@ function ExternalMinibatchLoader:next_batch(mode)
       end
       
       if t > 1 then
-        self.x[b][t-1]:sub(theta_size+1,-1):copy(theta)
-        --local week_mins = date['min'] + 60*date['hour'] + 60*24*(date['wday']-1) + 1 -- +1 bcs index starts at one
-        --self.y[b][t-1] = week_mins 
+        local week_mins = date['min'] + 60*date['hour'] + 60*24*(date['wday']-1) + 1 -- +1 bcs index starts at one
+        self.y[b][t-1] = week_mins 
         self.e_y[b][t-1] = e
       end
     end 
   end
-  --return self.x, self.y, self.e_x, self.e_y
-  return self.x, self.e_x, self.e_y
+  return self.x, self.y, self.e_x, self.e_y
 end
 
 
