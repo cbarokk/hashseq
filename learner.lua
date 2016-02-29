@@ -18,16 +18,13 @@ require 'nngraph'
 require 'optim'
 require 'lfs'
 require 'gnuplot'
-require 'util.QuadraticPenalty'
 
 require 'util.misc'
-local ExternalMinibatchLoader = require 'util.ExternalMinibatchLoader'
-local model_utils = require 'util.model_utils'
-local LSTM_theta = require 'model.LSTM_theta'
-local GRU_theta = require 'model.GRU_theta'
-local GRU_theta_L1 = require 'model.GRU_theta_L1'
+local ExternalMinibatchLoader_NextEvent = require 'util.ExternalMinibatchLoader_NextEvent'
+local ExternalMinibatchLoader_past = require 'util.ExternalMinibatchLoader_past'
 
-local RNN_theta = require 'model.RNN_theta'
+local model_utils = require 'util.model_utils'
+
 
 cmd = torch.CmdLine()
 cmd:text()
@@ -39,7 +36,11 @@ cmd:option('-rnn_size', 128, 'size of LSTM internal state')
 cmd:option('-num_layers', 2, 'number of layers in the LSTM')
 cmd:option('-num_events', 500, 'size of events vocabulary')
 cmd:option('-num_time_slots', 10080, 'size of time vocabulary')
-cmd:option('-model', 'lstm', 'lstm,gru or rnn')
+cmd:option('-model', 'next_event', 'next_event or hashing')
+cmd:option('-rnn_unit', 'lstm', 'lstm,gru or rnn')
+cmd:option('-encoder_shape', '256,32', 'size of the hash codes')
+
+
 -- optimization
 cmd:option('-learning_rate',2e-3,'learning rate')
 cmd:option('-learning_rate_decay',0.97,'learning rate decay')
@@ -59,6 +60,8 @@ cmd:option('-save_every',500,'how many steps/minibatches between dumping a check
 cmd:option('-print_every',1,'how many steps/minibatches between printing out the loss')
 cmd:option('-checkpoint_dir', 'cv', 'output directory where checkpoints get written')
 cmd:option('-savefile','model','filename to autosave the checkpoint to. Will be inside checkpoint_dir/')
+cmd:option('-redis_queue', '', 'name of the redis queue to read from')
+
 -- GPU/CPU
 cmd:option('-gpuid',0,'which gpu to use. -1 = use CPU')
 cmd:text()
@@ -86,7 +89,12 @@ if opt.gpuid >= 0 then
 end
 
 -- create the data loader class  
-local loader = ExternalMinibatchLoader.create()
+if opt.model == 'next_event' then
+  opt.loader = ExternalMinibatchLoader_NextEvent.create()
+elseif opt.model == 'hashing' then
+  opt.loader = ExternalMinibatchLoader_past.create()
+end
+
 if not path.exists(opt.checkpoint_dir) then lfs.mkdir(opt.checkpoint_dir) end
 local start_epoch = 0
 
@@ -104,17 +112,7 @@ if string.len(opt.init_from) > 0 then
     start_epoch = checkpoint.epoch
     do_random_init = false
 else
-    print('creating an ' .. opt.model .. ' with ' .. opt.num_layers .. ' layers')
-    protos = {}
-    if opt.model == 'lstm' then
-        protos.rnn = LSTM_theta.lstm()
-    elseif opt.model == 'gru' then
-        protos.rnn = GRU_theta.gru()
-    elseif opt.model == 'rnn' then
-        protos.rnn = RNN_theta.rnn()
-    end
-    
-    protos.criterion = loader.criterion()
+    protos = opt.loader.create_rnn_units_and_criterion()
     
 end
 
@@ -124,7 +122,7 @@ for L=1,opt.num_layers do
     local h_init = torch.zeros(opt.batch_size, opt.rnn_size)
     if opt.gpuid >=0 then h_init = h_init:cuda() end
     table.insert(init_state, h_init:clone())
-    if opt.model == 'lstm' then
+    if opt.rnn_unit == 'lstm' then
         table.insert(init_state, h_init:clone())
     end
 end
@@ -143,7 +141,7 @@ if do_random_init then
 end
 
 -- initialize the LSTM forget gates with slightly higher biases to encourage remembering in the beginning
-if opt.model == 'lstm' then
+if opt.rnn_unit == 'lstm' then
   for layer_idx = 1, opt.num_layers do
     for _,node in ipairs(protos.rnn.forwardnodes) do
       if node.data.annotations.name == "i2h_" .. layer_idx then
@@ -165,68 +163,7 @@ end
 
 
 -- do fwd/bwd and return loss, grad_params
-local init_state_global = clone_list(init_state)
-function feval(x)
-    if x ~= params then
-        params:copy(x)
-    end
-    grad_params:zero()
-
-    ------------------ get minibatch -------------------
-    local x, y, e_x, e_y = loader:next_batch('train')
-    
-    if opt.gpuid >= 0 then -- ship the input arrays to GPU
-        -- have to convert to float because integers can't be cuda()'d
-        x = x:float():cuda()
-        e_x = e_x:float():cuda()
-        y = y:float():cuda()
-        e_y = e_y:float():cuda()
-    end
-     ------------------- forward pass -------------------
-    local rnn_state = {[0] = init_state_global}
-    local predictions = {}
-    local loss = 0
-    
-    for t=1,opt.seq_length do
-      clones.rnn[t]:training() -- make sure we are in correct mode (this is cheap, sets flag)
-      local lst = clones.rnn[t]:forward{x[{{},t,{}}], e_x[{{},t,{}}], unpack(rnn_state[t-1])}
-      rnn_state[t] = {}
-      for i=1,#init_state do table.insert(rnn_state[t], lst[i]) end -- extract the state, without output
-      predictions[t] = { lst[#lst- 1], lst[#lst]} --
-      --loss = loss + clones.criterion[t]:forward(predictions[t], e_y[{{}, t, {}}]:clone():view(opt.batch_size))
-      loss = loss + clones.criterion[t]:forward(predictions[t], { y[{{}, t, {}}]:clone():view(opt.batch_size), e_y[{{}, t, {}}]:clone():view(opt.batch_size)})
-    end
-      
-    loss = loss / opt.seq_length
-    
-    ------------------ backward pass -------------------
-    -- initialize gradient at time t to be zeros (there's no influence from future)
-    local drnn_state = {[opt.seq_length] = clone_list(init_state, true)} -- true also zeros the clones
-    for t=opt.seq_length,1,-1 do
-      -- backprop through loss, and softmax/linear
-      local doutput_t = clones.criterion[t]:backward(predictions[t], { y[{{}, t, {}}]:clone():view(opt.batch_size), e_y[{{}, t, {}}]:clone():view(opt.batch_size)})
-      table.insert(drnn_state[t], doutput_t[1])
-      table.insert(drnn_state[t], doutput_t[2])
-      
-      local dlst = clones.rnn[t]:backward({x[{{},t,{}}], e_x[{{},t,{}}], unpack(rnn_state[t-1])}, drnn_state[t])
-      drnn_state[t-1] = {}
-      for k,v in pairs(dlst) do
-        if k > 2 then -- k == 1 is gradient on x, which we dont need
-          -- note we do k-1 because first item is dembeddings, and then follow the 
-          -- derivatives of the state, starting at index 2. I know...
-          drnn_state[t-1][k-2] = v
-        end
-      end
-    end
-    ------------------------ misc ----------------------
-    -- transfer final state to initial state (BPTT)
-    init_state_global = rnn_state[#rnn_state] -- NOTE: I don't think this needs to be a clone, right?
-    -- grad_params:div(opt.seq_length) -- this line should be here but since we use rmsprop it would have no effect. Removing for efficiency
-    -- clip gradient element-wise
-    grad_params:clamp(-opt.grad_clip, opt.grad_clip)
-    
-    return loss, grad_params
-end
+init_state_global = clone_list(init_state)
 
 
 -- start optimization here
@@ -241,7 +178,7 @@ local optim_state = {learningRate = opt.learning_rate, alpha = opt.decay_rate}
 for epoch = start_epoch, opt.max_epochs do
   for i = 1, opt.iterations_per_epoch do
     local timer = torch.Timer()
-    local _, loss = optim.rmsprop(feval, params, optim_state)
+    local _, loss = optim.rmsprop(opt.loader.feval, params, optim_state)
     local time = timer:time().real
 
     local train_loss = loss[1] -- the loss is inside a list, pop it
@@ -279,7 +216,7 @@ for epoch = start_epoch, opt.max_epochs do
   end
   -- every now and then or on last iteration
   if epoch % opt.save_every == 0 then
-    local savefile = string.format('%s/model_past_%s_%s_%s_%s_%s_%s_epoch%.2f_%.8f.t7', opt.checkpoint_dir, opt.model, opt.num_layers, opt.rnn_size, opt.encoder_shape, opt.theta_weight, opt.event_weight, epoch, accum_train_loss)
+    local savefile = string.format('%s/model_past_%s_%s_%s_%s_%s_%s_epoch%.2f_%.8f.t7', opt.checkpoint_dir, opt.rnn_unit, opt.num_layers, opt.rnn_size, opt.encoder_shape, opt.theta_weight, opt.event_weight, epoch, accum_train_loss)
     accum_train_loss = 0
     print('saving checkpoint to ' .. savefile)
     local checkpoint = {}
@@ -287,7 +224,6 @@ for epoch = start_epoch, opt.max_epochs do
     checkpoint.opt = opt
     checkpoint.train_losses = train_losses
     checkpoint.epoch = epoch
-    checkpoint.vocab = loader.vocab_mapping
     checkpoint.learning_rate = optim_state.learningRate
     torch.save(savefile, checkpoint)
   end

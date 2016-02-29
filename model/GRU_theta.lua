@@ -11,8 +11,7 @@ function GRU_theta.gru()
   local num_layers = opt.num_layers
   local num_events = opt.num_events
   local dropout = opt.dropout or 0
-  local lambda = opt.lambda
-  local encoder = opt.encoder
+  
   -- there are n+1 inputs (hiddens on each layer and x)
   local inputs = {}
   table.insert(inputs, nn.Identity()()) -- x
@@ -27,21 +26,18 @@ function GRU_theta.gru()
     return nn.CAddTable()({i2h, h2h})
   end
 
-  local x
-  local theta_x, e_x, input_size_L
+  local x, input_size_L
   local outputs = {}
-  local embedings_size = 100
   for L = 1, opt.num_layers do
 
     local prev_h = inputs[L+2]
     -- the input to this layer
 
     if L == 1 then 
-      theta_x = inputs[1]
-      --theta_embedings = nn.Linear(theta_size, embedings_size)(theta_x):annotate{name='emb_theta_lin'}
-      --theta_embedings = nn.Sigmoid()(theta_embedings):annotate{name='emb_theta_sigm'}
-      e_x = inputs[2]
-      e_embedings = nn.LookupTable(num_events, embedings_size)(e_x):annotate{name='emb_e'}
+      local theta_x = inputs[1]
+      local e_x = inputs[2]
+      local embedings_size = 100
+      local e_embedings = nn.LookupTable(num_events, embedings_size)(e_x):annotate{name='emb_e'}
       e_embedings = nn.Reshape(embedings_size)(e_embedings)
       
       --x = nn.JoinTable(2)({theta_embedings, e_embedings}) 
