@@ -6,43 +6,39 @@ import sys
 red = redis.Redis("localhost")
 #red = redis.Redis(host="193.156.17.90")
 
-def read_mapping(filename):
-    f = open(filename, 'r')
-    mapping = {}
-    
-    for line in f:
-        words = line.split(":")
-        mapping[int(words[1])] = int(words[0])
-    return mapping
-
-def read_vectors(filename, domain, mapping):
+def read_vectors(filename, domain):
    f = open(filename, 'r')
    vectors = {}
+   mapping = {}
    pipe = red.pipeline()
+   cnt=0
    for line in f:
       words = line.split()
-      key = int(words[0].split(":")[0])
-      if key in mapping:
-         vectors[key] = np.array([float(x) for x in words[1:]]).astype(np.float) 
-         pipe.sadd(domain +":vocab", mapping[key])
+      vectors[words[0]] = np.array(words[1:]).astype(np.float)
+      #mapping[cnt] = words[0]
+      mapping[cnt] = words[0]
+      cnt +=1
+      pipe.sadd(domain +":vocab", words[0])
 
    pipe.execute()
-   return vectors
+   return vectors, mapping
 
 def find_nearest_neighbors(mapping, D, domain):
    pipe = red.pipeline()
 
-   #for i in range(len(mapping)):
-   for i in mapping.keys():
+   for i in range(len(mapping)):
       tmp={}
-      neighbors = [x[0] for x in enumerate(D[i-1,:]) if x[1] <= 0.5]
+      neighbors = [x[0] for x in enumerate(D[i,:]) if x[1] <= 0.5]
       for j in range(len(neighbors)):
-         if not(i-1 ==  neighbors[j]):
-            tmp[mapping[neighbors[j]+1]] = D[i-1,neighbors[j]]
-            print D[i-1,neighbors[j]], " : ", mapping[i], " -->" , mapping[neighbors[j]+1]
-      if len(tmp):
-         pipe.hmset(domain + ":" + str(mapping[i]), tmp)
-      pipe.execute()
+         if not(mapping[i] ==  mapping[neighbors[j]]):
+            neighbor = mapping[neighbors[j]]
+            #pipe.zadd(domain + ":"+mapping[i], neighbor=D[i,neighbors[j]])
+            tmp[mapping[neighbors[j]]] = D[i,neighbors[j]]
+            #print D[i,neighbors[j]], " : ", mapping[i], " -->" , mapping[neighbors[j]]
+            if len(tmp):
+               pipe.zadd(domain + ":"+mapping[i], **tmp)
+
+   pipe.execute()
 
 
 def get_indexes(words, mapping):
@@ -62,15 +58,13 @@ if __name__ == '__main__':
 
    domain = "globul:" + sys.argv[2]
 
-   map_file = sys.argv[3]
-   mapping = read_mapping(map_file)    
-
    print "loading vectors"
-   vectors = read_vectors(filename, domain, mapping)
+   vectors, mapping = read_vectors(filename, domain)
 
-   X=[]
-   for i in sorted(vectors):
-      X.append(vectors[i])
+   X = []
+   for i in range(len(mapping)):
+      X.append(vectors[mapping[i]])
+   
    X = np.array(X)
 
    print "computing distances"
@@ -78,4 +72,14 @@ if __name__ == '__main__':
 
    print "storing in redis"
    find_nearest_neighbors(mapping, D, domain)
+
+   #indices = get_indexes(["norway", "ceo", "malaysia"], mapping)
+   #Y = np.add( np.subtract(X[indices[0],:], X[indices[1],:]), X[indices[2],:] ) 
+   #Y = np.reshape(Y, (1, 50))
+   #print Y.shape
+   #D2 = pairwise_distances(X, Y, metric='cosine', n_jobs=-1)
+   #print mapping[np.argmin(D2)]
+
+
+
 
