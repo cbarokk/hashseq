@@ -1,5 +1,5 @@
 '''
-Loads TACOS data into redis database.
+Loads HDF5 data into a locally running HDF5 database.
 
 Author: Cyril.Banino-Rokkones@telenor.com, Axel.Tidemann@telenor.com
 '''
@@ -92,8 +92,8 @@ def fetch_k_events(k, data):
     start = random.randint(0, len(x)-k)
     return ','.join(x[start:start+k])
 
-def dump_id_mapping(event_IDs):
-    with open('event_IDs_mapping.txt','w') as f:
+def dump_id_mapping(event_IDs, prefix):
+    with open('{}_event_IDs_mapping.txt'.format(prefix),'w') as f:
         for k,v in event_IDs.iteritems():
             f.write('{} : {}\n'.format(str(k), str(v)))
 
@@ -103,9 +103,11 @@ def histogram(data, filename):
     plt.tight_layout()
     plt.savefig('{}.png'.format(filename), dpi=300)
     plt.clf()
-            
-def push(train_sources, val_sources, prefix, k):
+
+def push(train_sources, val_sources, events, prefix, k):
     red = redis.StrictRedis()
+
+    red.rpush('{}-events'.format(prefix), events)
 
     train_queue = '{}-train'.format(prefix)
     val_queue = '{}-validate'.format(prefix)
@@ -170,6 +172,6 @@ if __name__ == '__main__':
     train_sources, val_sources, event_IDs = load_data(args)
     trim_data(args, train_sources)
     trim_data(args, val_sources)
-    dump_id_mapping(event_IDs)
+    dump_id_mapping(event_IDs, args.queue_prefix)
     print 'Starting to push data to redis'
-    push(train_sources, val_sources, args.queue_prefix, args.lower_len_seq+1)
+    push(train_sources, val_sources, event_IDs.keys(), args.queue_prefix, args.lower_len_seq+1)

@@ -78,6 +78,8 @@ function ExternalMinibatchLoader_NextEvent:next_batch(queue)
   self.dates = {}
   self.batch = {}
 
+  -- we check to see what are the events of interest. If none, default to plain old next event prediction.
+  
   for b=1, opt.batch_size do
     seq = redis_client:blpop(queue, 0)
     table.insert(self.batch, seq[2])
