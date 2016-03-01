@@ -35,16 +35,18 @@ cmd:text('Options')
 cmd:option('-rnn_size', 128, 'size of LSTM internal state')
 cmd:option('-num_layers', 2, 'number of layers in the LSTM')
 cmd:option('-num_events', 500, 'size of events vocabulary')
-cmd:option('-num_time_slots', 10080, 'size of time vocabulary')
+cmd:option('-num_weekly_slots', 10080, 'size of time vocabulary')
 cmd:option('-model', 'next_event', 'next_event or hashing')
 cmd:option('-rnn_unit', 'lstm', 'lstm,gru or rnn')
 cmd:option('-encoder_shape', '256,32', 'size of the hash codes')
-
+cmd:option('-theta_weight',1.0,'weight for loss function')
+cmd:option('-event_weight',1.0,'weight for loss function')
 
 -- optimization
 cmd:option('-learning_rate',2e-3,'learning rate')
 cmd:option('-learning_rate_decay',0.97,'learning rate decay')
-cmd:option('-learning_rate_decay_after',1,'in number of epochs, when to start decaying the learning rate')
+cmd:option('-learning_rate_decay_after',50,'number of epochs, before considering decaying the learning rate')
+cmd:option('-learning_rate_decay_threshold',-1e-8,'maximum slope of 2nd derivative ')
 cmd:option('-decay_rate',0.95,'decay rate for rmsprop')
 cmd:option('-dropout',0,'dropout for regularization, used after each RNN hidden layer. 0 = no dropout')
 cmd:option('-seq_length',50,'number of timesteps to unroll for')
@@ -61,6 +63,8 @@ cmd:option('-print_every',1,'how many steps/minibatches between printing out the
 cmd:option('-checkpoint_dir', 'cv', 'output directory where checkpoints get written')
 cmd:option('-savefile','model','filename to autosave the checkpoint to. Will be inside checkpoint_dir/')
 cmd:option('-redis_queue', '', 'name of the redis queue to read from')
+cmd:option('-info', '', 'small string, just to simplify viewing several plotting windows at once')
+
 
 -- GPU/CPU
 cmd:option('-gpuid',0,'which gpu to use. -1 = use CPU')
@@ -170,12 +174,17 @@ init_state_global = clone_list(init_state)
 local train_losses = {}
 local monitor_losses = {}
 local learning_rates={}
+local slopes={}
+
 local loss0 = nil
-local accum_train_loss = 0
+local accum_train_loss
 
 local optim_state = {learningRate = opt.learning_rate, alpha = opt.decay_rate}
+local decay_learning_rate = false
+local current_slope = 0
 
 for epoch = start_epoch, opt.max_epochs do
+  accum_train_loss = 0
   for i = 1, opt.iterations_per_epoch do
     local timer = torch.Timer()
     local _, loss = optim.rmsprop(opt.loader.feval, params, optim_state)
@@ -185,9 +194,9 @@ for epoch = start_epoch, opt.max_epochs do
     accum_train_loss = accum_train_loss + train_loss
   
     if i % opt.print_every == 0 then
-      print(string.format("%d/%d (epoch %.3f), train_loss = %6.8f, grad/param norm = %6.4e, time/batch = %.2fs", i, opt.iterations_per_epoch, epoch, train_loss, grad_params:norm() / params:norm(), time))
+      print(string.format("%d/%d (epoch %.3f), train_loss = %6.8f, grad/param norm = %6.4e, time/batch = %.2fs, slope = %2.2e", i, opt.iterations_per_epoch, epoch, train_loss, grad_params:norm() / params:norm(), time, current_slope))
     end
-
+  
     -- handle early stopping if things are going really bad
     if loss[1] ~= loss[1] then
       print('loss is NaN.  This usually indicates a bug.  Please check the issues page for existing issues, or create a new issue, if none exist.  Ideally, please state: your operating system, 32-bit/64-bit, your blas version, cpu/cuda/cl?')
@@ -201,23 +210,69 @@ for epoch = start_epoch, opt.max_epochs do
   gnuplot.title('train losses ' .. opt.info)
   gnuplot.plot({torch.Tensor(train_losses),'-'})
   
+  learning_rates[#learning_rates+1] = optim_state.learningRate
+  gnuplot.figure('learning rate')
+  gnuplot.title('learning rate ' .. opt.info)
+  gnuplot.plot({torch.Tensor(learning_rates),'-'})
+  
+  monitor_losses[#monitor_losses+1] = accum_train_loss
+  
+  if #monitor_losses > 3 then
+    local y = torch.Tensor(monitor_losses)
+    local x = torch.Tensor(#monitor_losses,4):fill(1)
+    for i=1, x:size()[1] do
+      x[{i,1}] = i*i*i
+      x[{i,2}] = i*i
+      x[{i,3}] = i
+    end
+    
+    local theta = normal_equations(x, y)
+    local p_x = torch.linspace(1,#monitor_losses, #monitor_losses)
+    local p_y = p_x:clone():cmul(p_x):cmul(p_x):mul(theta[1]):add(p_x:clone():cmul(p_x):mul(theta[2])):add(p_x:clone():mul(theta[3])):add(theta[4])
+    
+    --local first_derivative = p_x:clone():cmul(p_x):mul(3*theta[1]):add(p_x:clone():mul(2*theta[2])):add(theta[3])
+    --local second_derivative = p_x:clone():mul(6*theta[1]):add(2*theta[2])
+
+    current_slope = 6*theta[1]
+    slopes[#slopes+1] = current_slope
+    gnuplot.figure('slopes')
+    gnuplot.title('slopes ' .. opt.info)
+    gnuplot.plot({torch.Tensor(slopes),'-'})
+    
+    gnuplot.figure('monitor losses')
+    gnuplot.title('monitor losses ' .. opt.info)
+    gnuplot.plot({"loss", torch.Tensor(monitor_losses),'-'},  {"theta", p_x, p_y,'-'})
+    
+    --[[
+    gnuplot.figure('derivatives')
+    gnuplot.title('derivatives ' .. opt.info)
+    gnuplot.plot({"1st", p_x, first_derivative,'-'}, {"2nd", p_x, second_derivative,'-'})
+      ]]--
+  
+    if #monitor_losses > opt.learning_rate_decay_after then
+      if current_slope > opt.learning_rate_decay_threshold then
+        decay_learning_rate = true
+        monitor_losses = {}
+      end
+    end
+  end
+  
   if loss0 == nil then loss0 = accum_train_loss end
   if accum_train_loss > loss0 * 3 then
     print('loss is exploding, aborting.')
     break -- halt
   end
-  -- exponential learning rate decay
-  if epoch % 10 == 0 and opt.learning_rate_decay < 1 then
-    if epoch >= opt.learning_rate_decay_after then
-      local decay_factor = opt.learning_rate_decay
-      optim_state.learningRate = optim_state.learningRate * decay_factor -- decay it
-      print('decayed learning rate by a factor ' .. decay_factor .. ' to ' .. optim_state.learningRate)
-    end
+  
+  if decay_learning_rate then
+    local decay_factor = opt.learning_rate_decay
+    optim_state.learningRate = optim_state.learningRate * decay_factor -- decay it
+    print('decayed learning rate by a factor ' .. decay_factor .. ' to ' .. optim_state.learningRate)
+    decay_learning_rate = false
   end
+  
   -- every now and then or on last iteration
   if epoch % opt.save_every == 0 then
     local savefile = string.format('%s/model_past_%s_%s_%s_%s_%s_%s_epoch%.2f_%.8f.t7', opt.checkpoint_dir, opt.rnn_unit, opt.num_layers, opt.rnn_size, opt.encoder_shape, opt.theta_weight, opt.event_weight, epoch, accum_train_loss)
-    accum_train_loss = 0
     print('saving checkpoint to ' .. savefile)
     local checkpoint = {}
     checkpoint.protos = protos

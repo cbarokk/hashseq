@@ -30,7 +30,7 @@ function ExternalMinibatchLoader_past.create()
     self.x = torch.DoubleTensor(opt.batch_size, opt.seq_length, theta_size) 
     self.e_x = torch.IntTensor(opt.batch_size, opt.seq_length, 1) 
     
-    self.y = torch.DoubleTensor(opt.batch_size, opt.seq_length, opt.num_time_slots) 
+    self.y = torch.DoubleTensor(opt.batch_size, opt.seq_length, opt.num_weekly_slots) 
     --self.y = torch.Doub leTensor(opt.batch_size, opt.seq_length, 1) 
     
     --self.e_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1) 
@@ -106,7 +106,7 @@ function ExternalMinibatchLoader_past:next_batch()
       self.e_x[b][t] = e
       
       local min_of_the_week = date['min'] + 60*date['hour'] + 60*24*(date['wday']-1) 
-      local time_slot = math.floor(min_of_the_week/10080*opt.num_time_slots) +1 -- +1 bcs index starts at 1 in lua 
+      local time_slot = math.floor(min_of_the_week/10080*opt.num_weekly_slots) +1 -- +1 bcs index starts at 1 in lua 
       
       self.y[b]:sub(t, -1, time_slot, time_slot):fill(t*t)
       self.y[b][t]:div(self.y[b][t]:sum())

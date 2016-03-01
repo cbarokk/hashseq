@@ -2,7 +2,7 @@ local RNN_theta = {}
 
 function RNN_theta.rnn()
   local rnn_size = opt.rnn_size
-  local num_time_slots = opt.num_time_slots
+  local num_weekly_slots = opt.num_weekly_slots
   local num_layers = opt.num_layers
   local num_events = opt.num_events
   local dropout = opt.dropout or 0
@@ -48,13 +48,18 @@ function RNN_theta.rnn()
   local layer = outputs[#outputs]
   
   if dropout > 0 then layer = nn.Dropout(dropout)(layer) end
-  local theta_pred = nn.Linear(rnn_size, num_time_slots)(layer):annotate{name='theta_pred'}
-  local logsoft_theta = nn.LogSoftMax()(theta_pred)
-  table.insert(outputs, logsoft_theta)
   
-  local proj = nn.Linear(rnn_size, num_events)(layer):annotate{name='decoder'}
-  local logsoft = nn.LogSoftMax()(proj)
-  table.insert(outputs, logsoft)
+  local weekly_pred = nn.Linear(rnn_size, num_weekly_slots)(layer)
+  weekly_pred = nn.LogSoftMax()(weekly_pred)
+  table.insert(outputs, weekly_pred)
+  
+  local yearly_pred = nn.Linear(rnn_size, 52)(layer)
+  yearly_pred = nn.LogSoftMax()(yearly_pred)
+  table.insert(outputs, yearly_pred)
+  
+  local event_pred = nn.Linear(rnn_size, num_events)(layer)
+  event_pred = nn.LogSoftMax()(event_pred)
+  table.insert(outputs, event_pred)
   
   return nn.gModule(inputs, outputs)
 end
