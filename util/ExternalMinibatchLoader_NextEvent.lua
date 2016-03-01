@@ -22,7 +22,8 @@ function ExternalMinibatchLoader_NextEvent.create()
     self.e_x = torch.IntTensor(opt.batch_size, opt.seq_length, 1) 
     
     self.y = torch.DoubleTensor(opt.batch_size, opt.seq_length, 1) 
-    self.e_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1) 
+    self.w_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1)
+    self.e_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1)
     
     collectgarbage()
     return self
@@ -31,7 +32,7 @@ end
 function ExternalMinibatchLoader_NextEvent:create_rnn_units_and_criterion()
   print('creating an ' .. opt.model .. ' with ' .. opt.num_layers .. ' layers')
   local protos = {}
-  if opt.rnn_model == 'lstm' then
+  if opt.rnn_unit == 'lstm' then
     protos.rnn = LSTM_theta.lstm()
   elseif opt.rnn_unit == 'gru' then
     protos.rnn = GRU_theta.gru()
@@ -40,7 +41,8 @@ function ExternalMinibatchLoader_NextEvent:create_rnn_units_and_criterion()
   end
   local crit1 = nn.ClassNLLCriterion()
   local crit2 = nn.ClassNLLCriterion()  
-  protos.criterion = nn.ParallelCriterion():add(crit1, opt.theta_weight):add(crit2, opt.event_weight)
+  local crit3 = nn.ClassNLLCriterion()  
+  protos.criterion = nn.ParallelCriterion():add(crit1, opt.theta_weight):add(crit2, opt.theta_weight):add(crit3, opt.event_weight)
   return protos
 end
 
@@ -65,7 +67,7 @@ function ExternalMinibatchLoader_NextEvent.timestamp2theta(timestamp)
   theta[7] = math.cos((2*math.pi)/7*day) --cos_day
   theta[8] = math.sin((2*math.pi)/7*day) --sin_day
   
-  return theta, date
+  return theta, tonumber(os.date( "%V", timestamp)), date
 end
 
 function ExternalMinibatchLoader_NextEvent:next_batch(queue)
@@ -74,6 +76,7 @@ function ExternalMinibatchLoader_NextEvent:next_batch(queue)
   self.y:zero()
   self.e_y:zero()
   self.e_x:zero()
+  self.w_y:zero()
   
   self.dates = {}
   self.batch = {}
@@ -91,7 +94,7 @@ function ExternalMinibatchLoader_NextEvent:next_batch(queue)
       local timestamp = tonumber(words[1])
       table.insert(self.dates, timestamp)
 
-      local theta, date = ExternalMinibatchLoader_NextEvent.timestamp2theta(timestamp)
+      local theta, weeknr, date = ExternalMinibatchLoader_NextEvent.timestamp2theta(timestamp)
       
       if t < #events then
         self.x[b][t]:sub(1,theta_size):copy(theta)
@@ -101,6 +104,7 @@ function ExternalMinibatchLoader_NextEvent:next_batch(queue)
       if t > 1 then
         local week_mins = date['min'] + 60*date['hour'] + 60*24*(date['wday']-1) + 1 -- +1 bcs index starts at one
         self.y[b][t-1] = week_mins 
+        self.w_y[b][t-1] = weeknr
         self.e_y[b][t-1] = e
       end
     end 
@@ -111,6 +115,8 @@ function ExternalMinibatchLoader_NextEvent:next_batch(queue)
     self.e_x = self.e_x:float():cuda()
     self.y = self.y:float():cuda()
     self.e_y = self.e_y:float():cuda()
+    self.w_y = self.w_y:float():cuda()
+
   end
 end
 
@@ -119,10 +125,12 @@ function ExternalMinibatchLoader_NextEvent:feval()
 
     ------------------ get minibatch -------------------
     opt.loader:next_batch(opt.redis_queue)
+    
     local x = opt.loader.x
     local y = opt.loader.y
     local e_x = opt.loader.e_x
     local e_y = opt.loader.e_y
+    local w_y = opt.loader.w_y
     
     local rnn_state = {[0] = init_state_global}
     local predictions = {}
@@ -133,8 +141,9 @@ function ExternalMinibatchLoader_NextEvent:feval()
       local lst = clones.rnn[t]:forward{x[{{},t,{}}], e_x[{{},t,{}}], unpack(rnn_state[t-1])}
       rnn_state[t] = {}
       for i=1,#init_state do table.insert(rnn_state[t], lst[i]) end -- extract the state, without output
-      predictions[t] = { lst[#lst- 1], lst[#lst]} --
-      loss = loss + clones.criterion[t]:forward(predictions[t], { y[{{}, t, {}}]:clone():view(opt.batch_size), e_y[{{}, t, {}}]:clone():view(opt.batch_size)})
+      predictions[t] = { lst[#lst- 2], lst[#lst- 1], lst[#lst]} --
+      loss = loss + clones.criterion[t]:forward(predictions[t], 
+        { y[{{}, t, {}}]:clone():view(opt.batch_size), w_y[{{}, t, {}}]:clone():view(opt.batch_size), e_y[{{}, t, {}}]:clone():view(opt.batch_size)})
     end
       
     loss = loss / opt.seq_length
@@ -144,9 +153,12 @@ function ExternalMinibatchLoader_NextEvent:feval()
     local drnn_state = {[opt.seq_length] = clone_list(init_state, true)} -- true also zeros the clones
     for t=opt.seq_length,1,-1 do
       -- backprop through loss, and softmax/linear
-      local doutput_t = clones.criterion[t]:backward(predictions[t], { y[{{}, t, {}}]:clone():view(opt.batch_size), e_y[{{}, t, {}}]:clone():view(opt.batch_size)})
+      local doutput_t = clones.criterion[t]:backward(predictions[t], 
+        { y[{{}, t, {}}]:clone():view(opt.batch_size), w_y[{{}, t, {}}]:clone():view(opt.batch_size), e_y[{{}, t, {}}]:clone():view(opt.batch_size)})
       table.insert(drnn_state[t], doutput_t[1])
       table.insert(drnn_state[t], doutput_t[2])
+      table.insert(drnn_state[t], doutput_t[3])
+
       
       local dlst = clones.rnn[t]:backward({x[{{},t,{}}], e_x[{{},t,{}}], unpack(rnn_state[t-1])}, drnn_state[t])
       drnn_state[t-1] = {}
