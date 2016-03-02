@@ -21,6 +21,7 @@ require 'gnuplot'
 
 require 'util.misc'
 local ExternalMinibatchLoader_NextEvent = require 'util.ExternalMinibatchLoader_NextEvent'
+local ExternalMinibatchLoader_NextEventOfInterest = require 'util.ExternalMinibatchLoader_NextEventOfInterest'
 local ExternalMinibatchLoader_past = require 'util.ExternalMinibatchLoader_past'
 
 local model_utils = require 'util.model_utils'
@@ -34,9 +35,9 @@ cmd:text('Options')
 -- model params
 cmd:option('-rnn_size', 128, 'size of LSTM internal state')
 cmd:option('-num_layers', 2, 'number of layers in the LSTM')
-cmd:option('-num_events', 500, 'size of events vocabulary')
+cmd:option('-num_events', 0, 'size of events vocabulary')
 cmd:option('-num_weekly_slots', 10080, 'size of time vocabulary')
-cmd:option('-model', 'next_event', 'next_event or hashing')
+cmd:option('-model', 'next_event_of_interest', 'next_event, next_event_of_interest or hashing')
 cmd:option('-rnn_unit', 'lstm', 'lstm,gru or rnn')
 cmd:option('-encoder_shape', '256,32', 'size of the hash codes')
 cmd:option('-theta_weight',1.0,'weight for loss function')
@@ -63,6 +64,7 @@ cmd:option('-print_every',1,'how many steps/minibatches between printing out the
 cmd:option('-checkpoint_dir', 'cv', 'output directory where checkpoints get written')
 cmd:option('-savefile','model','filename to autosave the checkpoint to. Will be inside checkpoint_dir/')
 cmd:option('-redis_queue', '', 'name of the redis queue to read from')
+cmd:option('-redis_interest_list', '', 'name of the redis list to read interesting events')
 cmd:option('-info', '', 'small string, just to simplify viewing several plotting windows at once')
 
 
@@ -94,9 +96,11 @@ end
 
 -- create the data loader class  
 if opt.model == 'next_event' then
-  opt.loader = ExternalMinibatchLoader_NextEvent.create()
+   opt.loader = ExternalMinibatchLoader_NextEvent.create()
+elseif opt.model == 'next_event_of_interest' then
+   opt.loader = ExternalMinibatchLoader_NextEventOfInterest.create()
 elseif opt.model == 'hashing' then
-  opt.loader = ExternalMinibatchLoader_past.create()
+   opt.loader = ExternalMinibatchLoader_past.create()
 end
 
 if not path.exists(opt.checkpoint_dir) then lfs.mkdir(opt.checkpoint_dir) end

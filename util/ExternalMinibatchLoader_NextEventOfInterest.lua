@@ -1,4 +1,3 @@
-
 -- Modified from https://github.com/oxford-cs-ml-2015/practical6
 -- the modification included support for train/val/test splits
 local LSTM_theta = require 'model.LSTM_theta'
@@ -8,28 +7,19 @@ local RNN_theta = require 'model.RNN_theta'
 local redis = require 'redis'
 local redis_client = redis.connect('127.0.0.1', 6379)
 
-local ExternalMinibatchLoader_NextEvent = {}
-ExternalMinibatchLoader_NextEvent.__index = ExternalMinibatchLoader_NextEvent
+local ExternalMinibatchLoader_NextEventOfInterest = {}
+ExternalMinibatchLoader_NextEventOfInterest.__index = ExternalMinibatchLoader_NextEventOfInterest
 
 theta_size = 8
 
-function ExternalMinibatchLoader_NextEvent.create()
+function ExternalMinibatchLoader_NextEventOfInterest.create()
     local self = {}
-    setmetatable(self, ExternalMinibatchLoader_NextEvent)
-
-    print('reshaping tensor...')
-    self.x = torch.DoubleTensor(opt.batch_size, opt.seq_length, theta_size) 
-    self.e_x = torch.IntTensor(opt.batch_size, opt.seq_length, 1) 
-    
-    self.y = torch.DoubleTensor(opt.batch_size, opt.seq_length, 1) 
-    self.w_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1)
-    self.e_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1)
-    
+    setmetatable(self, ExternalMinibatchLoader_NextEventOfInterest)
     collectgarbage()
     return self
 end
 
-function ExternalMinibatchLoader_NextEvent:create_rnn_units_and_criterion()
+function ExternalMinibatchLoader_NextEventOfInterest:create_rnn_units_and_criterion()
   print('creating an ' .. opt.model .. ' with ' .. opt.num_layers .. ' layers')
   local protos = {}
   if opt.rnn_unit == 'lstm' then
@@ -46,7 +36,7 @@ function ExternalMinibatchLoader_NextEvent:create_rnn_units_and_criterion()
   return protos
 end
 
-function ExternalMinibatchLoader_NextEvent.timestamp2theta(timestamp)
+function ExternalMinibatchLoader_NextEventOfInterest.timestamp2theta(timestamp)
   local theta = torch.DoubleTensor(theta_size):fill(0)
   
   local date = os.date("*t", timestamp)
@@ -61,7 +51,7 @@ function ExternalMinibatchLoader_NextEvent.timestamp2theta(timestamp)
       
   local hour = date['hour']
   theta[5] = math.cos((2*math.pi)/24*hour) --cos_hour
-  theta[6] = math.sin((2*math.pi)/24*hour) -- sinhour
+  theta[6] = math.sin((2*math.pi)/24*hour) --sin_hour
       
   local day = date['wday']-1
   theta[7] = math.cos((2*math.pi)/7*day) --cos_day
@@ -70,74 +60,97 @@ function ExternalMinibatchLoader_NextEvent.timestamp2theta(timestamp)
   return theta, tonumber(os.date( "%V", timestamp)), date
 end
 
-function ExternalMinibatchLoader_NextEvent:next_batch(queue)
-  collectgarbage()
-  self.x:zero()
-  self.y:zero()
-  self.e_y:zero()
-  self.e_x:zero()
-  self.w_y:zero()
-  
-  self.dates = {}
-  self.batch = {}
-
-  for b=1, opt.batch_size do
-    seq = redis_client:blpop(queue, 0)
-    table.insert(self.batch, seq[2])
-    
-    local events = seq[2]:split(",")
-      
-    for t=1, #events do
-      local words = events[t]:split("-")
-      local e = tonumber(words[2])
-
-      local timestamp = tonumber(words[1])
-      table.insert(self.dates, timestamp)
-
-      local theta, weeknr, date = ExternalMinibatchLoader_NextEvent.timestamp2theta(timestamp)
-      
-      if t < #events then
-        self.x[b][t]:sub(1,theta_size):copy(theta)
-        self.e_x[b][t] = e
-      end
-      
-      if t > 1 then
-        local week_mins = date['min'] + 60*date['hour'] + 60*24*(date['wday']-1) + 1 -- +1 bcs index starts at one
-        self.y[b][t-1] = week_mins 
-        self.w_y[b][t-1] = weeknr
-        self.e_y[b][t-1] = e
-      end
-    end 
-  end
-  if opt.gpuid >= 0 then -- ship the input arrays to GPU
-    -- have to convert to float because integers can't be cuda()'d
-    self.x = self.x:float():cuda()
-    self.e_x = self.e_x:float():cuda()
-    self.y = self.y:float():cuda()
-    self.e_y = self.e_y:float():cuda()
-    self.w_y = self.w_y:float():cuda()
-
-  end
+function in_table(tbl, item)
+   for key, value in pairs(tbl) do
+      if value == item then return key end
+   end
+   return false
 end
 
-function ExternalMinibatchLoader_NextEvent:feval()
+function ExternalMinibatchLoader_NextEventOfInterest:next_batch(queue, interesting_list)
+   collectgarbage()
+   local dates = {}
+
+   local events_of_interest = redis_client:lrange(interesting_list, 0, -1)
+   for i, value in pairs(events_of_interest) do
+      events_of_interest[i] = tonumber(value)
+   end
+
+   local x = torch.DoubleTensor(opt.batch_size, opt.seq_length, theta_size)
+   local e_x = torch.IntTensor(opt.batch_size, opt.seq_length, 1) 
+   
+   local y = torch.DoubleTensor(opt.batch_size, opt.seq_length, 1) 
+   local w_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1)
+   local e_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1)
+   
+   for b=1, opt.batch_size do
+      local seq = redis_client:blpop(queue, 0)
+      local events = seq[2]:split(",")
+      
+      local interesting_week_mins = false
+      local interesting_weeknr = false
+      local interesting_event = false
+
+      assert(#events == opt.seq_length+1, 'Until dynamic seq_length is fixed, load redis with sequences of opt.seq_length+1')
+      
+      for t=#events,1,-1 do 
+	 local words = events[t]:split("-")
+	 local e = tonumber(words[2])
+
+	 local timestamp = tonumber(words[1])
+	 table.insert(dates, timestamp)
+
+	 local theta, weeknr, date = ExternalMinibatchLoader_NextEventOfInterest.timestamp2theta(timestamp)
+	 local week_mins = date['min'] + 60*date['hour'] + 60*24*(date['wday']-1) + 1 -- +1 bcs index starts at one
+	 
+	 if t < #events then
+	    x[b][t]:sub(1,theta_size):copy(theta)
+	    e_x[b][t] = e
+	 end
+
+	 if in_table(events_of_interest, e) then
+	    interesting_week_mins = week_mins
+	    interesting_weeknr = weeknr
+	    interesting_event = in_table(events_of_interest, e) + 1 -- 1 reserved for 'not interesting'
+	 end
+	 
+	 if t > 1 then
+	    if interesting_event then
+	       y[b][t-1] = interesting_week_mins 
+	       w_y[b][t-1] = interesting_weeknr
+	       e_y[b][t-1] = interesting_event
+	    else
+	       y[b][t-1] = week_mins 
+	       w_y[b][t-1] = weeknr
+	       e_y[b][t-1] = 1 -- not interesting
+	    end
+	 end
+      end 
+   end
+   if opt.gpuid >= 0 then -- ship the input arrays to GPU
+      -- have to convert to float because integers can't be cuda()'d
+      x = x:float():cuda()
+      e_x = e_x:float():cuda()
+      y = y:float():cuda()
+      e_y = e_y:float():cuda()
+      w_y = w_y:float():cuda()
+   end
+
+   return x, y, e_x, e_y, w_y, dates
+end
+
+function ExternalMinibatchLoader_NextEventOfInterest:feval()
     grad_params:zero()
 
     ------------------ get minibatch -------------------
-    opt.loader:next_batch(opt.redis_queue)
-    
-    local x = opt.loader.x
-    local y = opt.loader.y
-    local e_x = opt.loader.e_x
-    local e_y = opt.loader.e_y
-    local w_y = opt.loader.w_y
-    
+    local x, y, e_x, e_y, w_y, _ = opt.loader:next_batch(opt.redis_queue, opt.redis_interest_list)
+
     local rnn_state = {[0] = init_state_global}
     local predictions = {}
     local loss = 0
-    
+
     for t=1,opt.seq_length do
-      clones.rnn[t]:training() -- make sure we are in correct mode (this is cheap, sets flag)
+       clones.rnn[t]:training() -- make sure we are in correct mode (this is cheap, sets flag)
       local lst = clones.rnn[t]:forward{x[{{},t,{}}], e_x[{{},t,{}}], unpack(rnn_state[t-1])}
       rnn_state[t] = {}
       for i=1,#init_state do table.insert(rnn_state[t], lst[i]) end -- extract the state, without output
@@ -158,7 +171,6 @@ function ExternalMinibatchLoader_NextEvent:feval()
       table.insert(drnn_state[t], doutput_t[1])
       table.insert(drnn_state[t], doutput_t[2])
       table.insert(drnn_state[t], doutput_t[3])
-
       
       local dlst = clones.rnn[t]:backward({x[{{},t,{}}], e_x[{{},t,{}}], unpack(rnn_state[t-1])}, drnn_state[t])
       drnn_state[t-1] = {}
@@ -181,5 +193,5 @@ function ExternalMinibatchLoader_NextEvent:feval()
 end
 
 
-return ExternalMinibatchLoader_NextEvent
+return ExternalMinibatchLoader_NextEventOfInterest
 

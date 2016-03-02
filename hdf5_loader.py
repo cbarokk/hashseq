@@ -107,7 +107,7 @@ def histogram(data, filename):
 def push(train_sources, val_sources, events, prefix, k):
     red = redis.StrictRedis()
 
-    red.rpush('{}-events'.format(prefix), events)
+    red.hmset('{}-events'.format(prefix), events)
 
     train_queue = '{}-train'.format(prefix)
     val_queue = '{}-validate'.format(prefix)
@@ -135,7 +135,7 @@ if __name__ == '__main__':
         '--lower_len_seq',
         help='Lower bound sequence length for each device.',
         type=int,
-        default=1)
+        default=50)
     parser.add_argument(
         '--train_days',
         help='Number of days to use for training.',
@@ -174,4 +174,4 @@ if __name__ == '__main__':
     trim_data(args, val_sources)
     dump_id_mapping(event_IDs, args.queue_prefix)
     print 'Starting to push data to redis'
-    push(train_sources, val_sources, event_IDs.keys(), args.queue_prefix, args.lower_len_seq+1)
+    push(train_sources, val_sources, event_IDs, args.queue_prefix, args.lower_len_seq+1)
