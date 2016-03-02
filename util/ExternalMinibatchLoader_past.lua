@@ -45,7 +45,7 @@ end
 function ExternalMinibatchLoader_past:create_rnn_units_and_criterion()
   print('creating an ' .. opt.model .. ' with ' .. opt.num_layers .. ' layers')
   local protos = {}
-  if opt.rnn_model == 'lstm' then
+  if opt.rnn_unit == 'lstm' then
     protos.rnn = LSTM_theta_past.lstm()
   elseif opt.rnn_unit == 'gru' then
     protos.rnn = GRU_theta_past.gru()
