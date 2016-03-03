@@ -23,10 +23,12 @@ import seaborn as sns
 
 class IncrementDict(dict):
     '''Creates an index for the elements in the dict. 
-    Only adds new elements, like a set with an index.'''
+    Only adds new elements, like a set with an index.
+    Note that the counter starts at 2, since we reserve 1
+    for not interesting.'''
     def __init__(self):
         dict.__init__(self)
-        self.counter = 1
+        self.counter = 2
 
     def add(self, key):
         if key not in self:
@@ -164,14 +166,14 @@ if __name__ == '__main__':
         type=int,
         default=50000)
     parser.add_argument(
-        '--queue_prefix',
-        help='The prefix of the redis queue, for train/validation queues',
+        '--redis_prefix',
+        help='The prefix for the train/validation/events keys',
         default='tacos')
     args = parser.parse_args()
 
     train_sources, val_sources, event_IDs = load_data(args)
     trim_data(args, train_sources)
     trim_data(args, val_sources)
-    dump_id_mapping(event_IDs, args.queue_prefix)
+    dump_id_mapping(event_IDs, args.redis_prefix)
     print 'Starting to push data to redis'
-    push(train_sources, val_sources, event_IDs, args.queue_prefix, args.lower_len_seq+1)
+    push(train_sources, val_sources, event_IDs, args.redis_prefix, args.lower_len_seq+1)

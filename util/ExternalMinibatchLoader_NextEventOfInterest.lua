@@ -22,6 +22,12 @@ end
 function ExternalMinibatchLoader_NextEventOfInterest:create_rnn_units_and_criterion()
   print('creating an ' .. opt.model .. ' with ' .. opt.num_layers .. ' layers')
   local protos = {}
+  
+  -- 1 we reserve for 'not interesting'
+  opt.num_events = redis_client:hlen(opt.redis_prefix .. '-events') + 1
+  local number_of_interesting_events = redis_client:llen(opt.redis_prefix .. '-events-of-interest')
+  print('There are ' .. opt.num_events-1 .. ' unique events in redis, of which ' .. number_of_interesting_events .. ' are interesting')
+  
   if opt.rnn_unit == 'lstm' then
     protos.rnn = LSTM_theta.lstm()
   elseif opt.rnn_unit == 'gru' then
@@ -72,6 +78,8 @@ function ExternalMinibatchLoader_NextEventOfInterest:next_batch(queue, interesti
    local dates = {}
 
    local events_of_interest = redis_client:lrange(interesting_list, 0, -1)
+   assert(#events_of_interest > 0, 'You must specify interesting events.')
+   
    for i, value in pairs(events_of_interest) do
       events_of_interest[i] = tonumber(value)
    end
@@ -111,7 +119,7 @@ function ExternalMinibatchLoader_NextEventOfInterest:next_batch(queue, interesti
 	 if in_table(events_of_interest, e) then
 	    interesting_week_mins = week_mins
 	    interesting_weeknr = weeknr
-	    interesting_event = in_table(events_of_interest, e) + 1 -- 1 reserved for 'not interesting'
+	    interesting_event = e
 	 end
 	 
 	 if t > 1 then
@@ -143,7 +151,9 @@ function ExternalMinibatchLoader_NextEventOfInterest:feval()
     grad_params:zero()
 
     ------------------ get minibatch -------------------
-    local x, y, e_x, e_y, w_y, _ = opt.loader:next_batch(opt.redis_queue, opt.redis_interest_list)
+    local train_queue = opt.redis_prefix .. '-train'
+    local interesting_list = opt.redis_prefix .. '-events-of-interest'
+    local x, y, e_x, e_y, w_y, _ = opt.loader:next_batch(train_queue, interesting_list)
 
     local rnn_state = {[0] = init_state_global}
     local predictions = {}

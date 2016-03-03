@@ -35,7 +35,6 @@ cmd:text('Options')
 -- model params
 cmd:option('-rnn_size', 128, 'size of LSTM internal state')
 cmd:option('-num_layers', 2, 'number of layers in the LSTM')
-cmd:option('-num_events', 0, 'size of events vocabulary')
 cmd:option('-num_weekly_slots', 10080, 'size of time vocabulary')
 cmd:option('-model', 'next_event_of_interest', 'next_event, next_event_of_interest or hashing')
 cmd:option('-rnn_unit', 'lstm', 'lstm,gru or rnn')
@@ -63,10 +62,8 @@ cmd:option('-save_every',500,'how many steps/minibatches between dumping a check
 cmd:option('-print_every',1,'how many steps/minibatches between printing out the loss')
 cmd:option('-checkpoint_dir', 'cv', 'output directory where checkpoints get written')
 cmd:option('-savefile','model','filename to autosave the checkpoint to. Will be inside checkpoint_dir/')
-cmd:option('-redis_queue', '', 'name of the redis queue to read from')
-cmd:option('-redis_interest_list', '', 'name of the redis list to read interesting events')
+cmd:option('-redis_prefix', '', 'redis key name prefix, where to read train/validation/events data')
 cmd:option('-info', '', 'small string, just to simplify viewing several plotting windows at once')
-
 
 -- GPU/CPU
 cmd:option('-gpuid',0,'which gpu to use. -1 = use CPU')
