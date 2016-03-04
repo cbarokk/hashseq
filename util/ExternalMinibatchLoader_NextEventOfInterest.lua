@@ -25,7 +25,7 @@ function ExternalMinibatchLoader_NextEventOfInterest:create_rnn_units_and_criter
   
   -- 1 we reserve for 'not interesting'
   opt.num_events = redis_client:hlen(opt.redis_prefix .. '-events') + 1
-  local number_of_interesting_events = redis_client:llen(opt.redis_prefix .. '-events-of-interest')
+  local number_of_interesting_events = redis_client:scard(opt.redis_prefix .. '-events-of-interest')
   print('There are ' .. opt.num_events-1 .. ' unique events in redis, of which ' .. number_of_interesting_events .. ' are interesting')
   
   if opt.rnn_unit == 'lstm' then
@@ -66,83 +66,78 @@ function ExternalMinibatchLoader_NextEventOfInterest.timestamp2theta(timestamp)
   return theta, tonumber(os.date( "%V", timestamp)), date
 end
 
-function in_table(tbl, item)
-   for key, value in pairs(tbl) do
-      if value == item then return key end
-   end
-   return false
-end
-
 function ExternalMinibatchLoader_NextEventOfInterest:next_batch(queue, interesting_list)
-   collectgarbage()
-   local dates = {}
+  collectgarbage()
+  local dates = {}
 
-   local events_of_interest = redis_client:lrange(interesting_list, 0, -1)
-   assert(#events_of_interest > 0, 'You must specify interesting events.')
+  local tmp = redis_client:smembers(interesting_list)
+  assert(#tmp > 0, 'You must specify interesting events.')
    
-   for i, value in pairs(events_of_interest) do
-      events_of_interest[i] = tonumber(value)
-   end
-
-   local x = torch.DoubleTensor(opt.batch_size, opt.seq_length, theta_size)
-   local e_x = torch.IntTensor(opt.batch_size, opt.seq_length, 1) 
+  events_of_interest = {}
+  for key,value in pairs(tmp) do
+    events_of_interest[tonumber(value)] = true
+  end
    
-   local y = torch.DoubleTensor(opt.batch_size, opt.seq_length, 1) 
-   local w_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1)
-   local e_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1)
+  local x = torch.DoubleTensor(opt.batch_size, opt.seq_length, theta_size)
+  local e_x = torch.IntTensor(opt.batch_size, opt.seq_length, 1) 
    
-   for b=1, opt.batch_size do
-      local seq = redis_client:blpop(queue, 0)
-      local events = seq[2]:split(",")
+  local y = torch.DoubleTensor(opt.batch_size, opt.seq_length, 1) 
+  local w_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1)
+  local e_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1)
+   
+  for b=1, opt.batch_size do
+    local seq = redis_client:blpop(queue, 0)
+    local events = seq[2]:split(",")
       
-      local interesting_week_mins = false
-      local interesting_weeknr = false
-      local interesting_event = false
+    local interesting_week_mins = false
+    local interesting_weeknr = false
+    local interesting_event = false
 
-      assert(#events == opt.seq_length+1, 'Until dynamic seq_length is fixed, load redis with sequences of opt.seq_length+1')
+    assert(#events == opt.seq_length+1, 'Until dynamic seq_length is fixed, load redis with sequences of opt.seq_length+1')
       
-      for t=#events,1,-1 do 
-	 local words = events[t]:split("-")
-	 local e = tonumber(words[2])
+    for t=#events,1,-1 do 
+      local words = events[t]:split("-")
+      local e = tonumber(words[2])
 
-	 local timestamp = tonumber(words[1])
-	 table.insert(dates, timestamp)
+      local timestamp = tonumber(words[1])
+      table.insert(dates, timestamp)
 
-	 local theta, weeknr, date = ExternalMinibatchLoader_NextEventOfInterest.timestamp2theta(timestamp)
-	 local week_mins = date['min'] + 60*date['hour'] + 60*24*(date['wday']-1) + 1 -- +1 bcs index starts at one
+      local theta, weeknr, date = ExternalMinibatchLoader_NextEventOfInterest.timestamp2theta(timestamp)
+      local week_mins = date['min'] + 60*date['hour'] + 60*24*(date['wday']-1) + 1 -- +1 bcs index starts at one
 	 
-	 if t < #events then
-	    x[b][t]:sub(1,theta_size):copy(theta)
-	    e_x[b][t] = e
-	 end
+      if t < #events then
+        x[b][t]:sub(1,theta_size):copy(theta)
+        e_x[b][t] = e
+      end
 
-	 if in_table(events_of_interest, e) then
-	    interesting_week_mins = week_mins
-	    interesting_weeknr = weeknr
-	    interesting_event = e
-	 end
+      if events_of_interest[e] then
+        interesting_week_mins = week_mins
+        interesting_weeknr = weeknr
+        interesting_event = e
+      end
 	 
-	 if t > 1 then
-	    if interesting_event then
-	       y[b][t-1] = interesting_week_mins 
-	       w_y[b][t-1] = interesting_weeknr
-	       e_y[b][t-1] = interesting_event
-	    else
-	       y[b][t-1] = week_mins 
-	       w_y[b][t-1] = weeknr
-	       e_y[b][t-1] = 1 -- not interesting
-	    end
-	 end
-      end 
-   end
-   if opt.gpuid >= 0 then -- ship the input arrays to GPU
-      -- have to convert to float because integers can't be cuda()'d
-      x = x:float():cuda()
-      e_x = e_x:float():cuda()
-      y = y:float():cuda()
-      e_y = e_y:float():cuda()
-      w_y = w_y:float():cuda()
-   end
+      if t > 1 then
+        if interesting_event then
+          y[b][t-1] = interesting_week_mins 
+          w_y[b][t-1] = interesting_weeknr
+          e_y[b][t-1] = interesting_event
+        else
+          y[b][t-1] = week_mins 
+          w_y[b][t-1] = weeknr
+          e_y[b][t-1] = 1 -- not interesting
+        end
+      end
+    end 
+  end
+  
+  if opt.gpuid >= 0 then -- ship the input arrays to GPU
+    -- have to convert to float because integers can't be cuda()'d
+    x = x:float():cuda()
+    e_x = e_x:float():cuda()
+    y = y:float():cuda()
+    e_y = e_y:float():cuda()
+    w_y = w_y:float():cuda()
+  end
 
    return x, y, e_x, e_y, w_y, dates
 end

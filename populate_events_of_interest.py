@@ -39,4 +39,4 @@ else:
     with open(args.path) as f:
         event_IDs = [ events[line.strip()] for line in f ]
 
-red.rpush('{}-events-of-interest'.format(args.prefix), *event_IDs)
+red.sadd('{}-events-of-interest'.format(args.prefix), *event_IDs)
