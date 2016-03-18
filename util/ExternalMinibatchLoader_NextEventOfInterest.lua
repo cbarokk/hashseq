@@ -3,6 +3,8 @@
 local LSTM_theta = require 'model.LSTM_theta'
 local GRU_theta = require 'model.GRU_theta'
 local RNN_theta = require 'model.RNN_theta'
+require 'util.misc'
+
 
 local redis = require 'redis'
 local redis_client = redis.connect('127.0.0.1', 6379)
@@ -13,21 +15,35 @@ ExternalMinibatchLoader_NextEventOfInterest.__index = ExternalMinibatchLoader_Ne
 theta_size = 8
 
 function ExternalMinibatchLoader_NextEventOfInterest.create()
-    local self = {}
-    setmetatable(self, ExternalMinibatchLoader_NextEventOfInterest)
-    collectgarbage()
-    return self
+  local self = {}
+  setmetatable(self, ExternalMinibatchLoader_NextEventOfInterest)
+  
+  opt.num_eoi = redis_client:scard(opt.redis_prefix .. '-events-of-interest')
+  print ("opt.num_eoi", opt.num_eoi)
+  assert(opt.num_eoi > 0, 'You must specify interesting events.')
+  opt.num_eoi = opt.num_eoi + 1 -- add "not interesting"
+
+  opt.num_events = redis_client:hlen(opt.redis_prefix .. '-events') + 1
+  
+  local interesting_list = opt.redis_prefix .. '-events-of-interest'
+  local tmp = redis_client:smembers(interesting_list)
+   
+  self.events_of_interest = {}
+  for id, eoi in pairs(tmp) do
+    self.events_of_interest[tonumber(eoi)] = id+1 -- 1 reserved to "not intersting"
+  end
+  
+  print('There are ' .. opt.num_events-1 .. ' unique events in redis, of which ' .. opt.num_eoi-1 .. ' are interesting')
+  opt.time_slot_size = opt.horizon/opt.num_time_slots
+  
+  
+  return self
 end
 
 function ExternalMinibatchLoader_NextEventOfInterest:create_rnn_units_and_criterion()
   print('creating an ' .. opt.model .. ' with ' .. opt.num_layers .. ' layers')
   local protos = {}
-  
-  -- 1 we reserve for 'not interesting'
-  opt.num_events = redis_client:hlen(opt.redis_prefix .. '-events') + 1
-  local number_of_interesting_events = redis_client:scard(opt.redis_prefix .. '-events-of-interest')
-  print('There are ' .. opt.num_events-1 .. ' unique events in redis, of which ' .. number_of_interesting_events .. ' are interesting')
-  
+    
   if opt.rnn_unit == 'lstm' then
     protos.rnn = LSTM_theta.lstm()
   elseif opt.rnn_unit == 'gru' then
@@ -37,97 +53,60 @@ function ExternalMinibatchLoader_NextEventOfInterest:create_rnn_units_and_criter
   end
   local crit1 = nn.ClassNLLCriterion()
   local crit2 = nn.ClassNLLCriterion()  
-  local crit3 = nn.ClassNLLCriterion()  
-  protos.criterion = nn.ParallelCriterion():add(crit1, opt.theta_weight):add(crit2, opt.theta_weight):add(crit3, opt.event_weight)
+  protos.criterion = nn.ParallelCriterion():add(crit1, opt.theta_weight):add(crit2, opt.event_weight)
   return protos
 end
 
-function ExternalMinibatchLoader_NextEventOfInterest.timestamp2theta(timestamp)
-  local theta = torch.DoubleTensor(theta_size):fill(0)
-  
-  local date = os.date("*t", timestamp)
-  
-  local sec = date['sec']
-  theta[1] = math.cos((2*math.pi)/60*sec) --cos_sec
-  theta[2] = math.sin((2*math.pi)/60*sec) --sin_sec
-  
-  local min = date['min']
-  theta[3] = math.cos((2*math.pi)/60*min) --cos_min
-  theta[4] = math.sin((2*math.pi)/60*min) --sin_min
-      
-  local hour = date['hour']
-  theta[5] = math.cos((2*math.pi)/24*hour) --cos_hour
-  theta[6] = math.sin((2*math.pi)/24*hour) --sin_hour
-      
-  local day = date['wday']-1
-  theta[7] = math.cos((2*math.pi)/7*day) --cos_day
-  theta[8] = math.sin((2*math.pi)/7*day) --sin_day
-  
-  return theta, tonumber(os.date( "%V", timestamp)), date
-end
 
-function ExternalMinibatchLoader_NextEventOfInterest:next_batch(queue, interesting_list)
+function ExternalMinibatchLoader_NextEventOfInterest:next_batch()
   collectgarbage()
-  local dates = {}
 
-  local tmp = redis_client:smembers(interesting_list)
-  assert(#tmp > 0, 'You must specify interesting events.')
+--  local seqs = fetch_next_seqs(sequence_providers[opt.sequence_provider], opt)
+  local seqs = sequence_providers[opt.sequence_provider]()
+    
+  local num_events = #seqs[1]:split(",")
    
-  events_of_interest = {}
-  for key,value in pairs(tmp) do
-    events_of_interest[tonumber(value)] = true
-  end
-   
-  local x = torch.DoubleTensor(opt.batch_size, opt.seq_length, theta_size)
-  local e_x = torch.IntTensor(opt.batch_size, opt.seq_length, 1) 
-   
-  local y = torch.DoubleTensor(opt.batch_size, opt.seq_length, 1) 
-  local w_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1)
-  local e_y = torch.IntTensor(opt.batch_size, opt.seq_length, 1)
-   
-  for b=1, opt.batch_size do
-    local seq = redis_client:blpop(queue, 0)
-    local events = seq[2]:split(",")
-      
-    local interesting_week_mins = false
-    local interesting_weeknr = false
-    local interesting_event = false
-
-    assert(#events == opt.seq_length+1, 'Until dynamic seq_length is fixed, load redis with sequences of opt.seq_length+1')
-      
-    for t=#events,1,-1 do 
+  local x = torch.DoubleTensor(#seqs, num_events-1, theta_size):zero()
+  local e_x = torch.IntTensor(#seqs,  num_events-1, 1):zero()
+  local y = torch.IntTensor(#seqs, num_events-1, 1):zero()
+  local e_y = torch.IntTensor(#seqs, num_events-1, 1):fill(1)
+  
+  for s=1,#seqs do
+    local events = seqs[s]:split(",")
+  
+    for t= 1, #events do
       local words = events[t]:split("-")
       local e = tonumber(words[2])
 
       local timestamp = tonumber(words[1])
-      table.insert(dates, timestamp)
+      local theta = timestamp2theta(timestamp, theta_size)
 
-      local theta, weeknr, date = ExternalMinibatchLoader_NextEventOfInterest.timestamp2theta(timestamp)
-      local week_mins = date['min'] + 60*date['hour'] + 60*24*(date['wday']-1) + 1 -- +1 bcs index starts at one
-	 
       if t < #events then
-        x[b][t]:sub(1,theta_size):copy(theta)
-        e_x[b][t] = e
+        x[s][t]:sub(1,theta_size):copy(theta)
+        e_x[s][t] = e
+        y[s][t] = timestamp --remember what is current timestamp
       end
-
-      if events_of_interest[e] then
-        interesting_week_mins = week_mins
-        interesting_weeknr = weeknr
-        interesting_event = e
-      end
-	 
+      
       if t > 1 then
-        if interesting_event then
-          y[b][t-1] = interesting_week_mins 
-          w_y[b][t-1] = interesting_weeknr
-          e_y[b][t-1] = interesting_event
-        else
-          y[b][t-1] = week_mins 
-          w_y[b][t-1] = weeknr
-          e_y[b][t-1] = 1 -- not interesting
+        if self.events_of_interest[e] then
+          e_y[s]:sub(1,t-1):apply(function(x)
+            if x == 1 then --dont overwrite previous eoi
+              return self.events_of_interest[e] 
+            end 
+          end)
+        
+          y[s]:sub(1,t):apply(function(x)
+            if x > opt.num_time_slots then --dont overwrite previous eoi
+              return math.min( math.ceil((timestamp - x)/opt.time_slot_size)+1, opt.num_time_slots) 
+            end     
+          end)
         end
       end
-    end 
+    end
+    y[s]:apply(function(x)
+      return math.min(x, opt.num_time_slots) -- overwrite initial timestamps when no eoi founds
+    end)
+    
   end
   
   if opt.gpuid >= 0 then -- ship the input arrays to GPU
@@ -136,46 +115,86 @@ function ExternalMinibatchLoader_NextEventOfInterest:next_batch(queue, interesti
     e_x = e_x:float():cuda()
     y = y:float():cuda()
     e_y = e_y:float():cuda()
-    w_y = w_y:float():cuda()
   end
-
-   return x, y, e_x, e_y, w_y, dates
+  --print ("y", y)
+  return x, y, e_x, e_y
 end
+
+function display_uncertainty(y_pred, y_fasit)
+      local y_probs = y_pred:clone():exp():double()
+      local y_truth = y_fasit:clone()
+      
+      local s=0
+      local left_cumul = y_probs:clone():mean(1)
+      left_cumul:apply(function(x)
+          s = s + x
+          return s
+        end)
+      
+      local right_cumul = y_probs:clone():mean(1)
+      s=0
+      for i=opt.num_time_slots, 1, -1 do
+        s = s + right_cumul[1][i]
+        right_cumul[1][i] = s
+      end
+      local y_truth_dist = left_cumul:clone():zero()
+      
+      y_truth:apply(function(x)
+          y_truth_dist[1][x] = y_truth_dist[1][x] + 1 
+        end)
+      
+      y_truth_dist:div(y_truth_dist:sum())
+      
+      gnuplot.axis{1, opt.num_time_slots,0,1}
+      gnuplot.figure('uncertainty')
+      gnuplot.title('uncertainty ' .. opt.info)
+      gnuplot.plot({"start", left_cumul[1],'-'}, {"y", y_truth_dist[1], '|'}, {"end", right_cumul[1],'-'})
+      
+    end
 
 function ExternalMinibatchLoader_NextEventOfInterest:feval()
     grad_params:zero()
 
     ------------------ get minibatch -------------------
-    local train_queue = opt.redis_prefix .. '-train'
-    local interesting_list = opt.redis_prefix .. '-events-of-interest'
-    local x, y, e_x, e_y, w_y, _ = opt.loader:next_batch(train_queue, interesting_list)
+    opt.loader:next_batch()
+    
+    local x, y, e_x, e_y = opt.loader:next_batch(opt.loader.train_queue)
+    
+    local batch_size = x:size(1)
+    local len_seq = x:size(2)
+    
+    local init_state = get_init_state(batch_size)
+    local init_state_global = get_init_state_global(batch_size)
+    local clones = get_clones(len_seq)
 
     local rnn_state = {[0] = init_state_global}
     local predictions = {}
     local loss = 0
 
-    for t=1,opt.seq_length do
-       clones.rnn[t]:training() -- make sure we are in correct mode (this is cheap, sets flag)
+    for t=1,len_seq do
+      clones.rnn[t]:training() -- make sure we are in correct mode (this is cheap, sets flag)
       local lst = clones.rnn[t]:forward{x[{{},t,{}}], e_x[{{},t,{}}], unpack(rnn_state[t-1])}
       rnn_state[t] = {}
       for i=1,#init_state do table.insert(rnn_state[t], lst[i]) end -- extract the state, without output
-      predictions[t] = { lst[#lst- 2], lst[#lst- 1], lst[#lst]} --
+      predictions[t] = {lst[#lst- 1], lst[#lst]} --
+      
+      --display_uncertainty(lst[#lst-1], y[{{}, t, {}}])
+      
       loss = loss + clones.criterion[t]:forward(predictions[t], 
-        { y[{{}, t, {}}]:clone():view(opt.batch_size), w_y[{{}, t, {}}]:clone():view(opt.batch_size), e_y[{{}, t, {}}]:clone():view(opt.batch_size)})
+        { y[{{}, t, {}}]:clone():view(batch_size), e_y[{{}, t, {}}]:clone():view(batch_size)})
     end
       
-    loss = loss / opt.seq_length
+    loss = loss / len_seq
     
     ------------------ backward pass -------------------
     -- initialize gradient at time t to be zeros (there's no influence from future)
-    local drnn_state = {[opt.seq_length] = clone_list(init_state, true)} -- true also zeros the clones
-    for t=opt.seq_length,1,-1 do
+    local drnn_state = {[len_seq] = clone_list(init_state, true)} -- true also zeros the clones
+    for t=len_seq,1,-1 do
       -- backprop through loss, and softmax/linear
       local doutput_t = clones.criterion[t]:backward(predictions[t], 
-        { y[{{}, t, {}}]:clone():view(opt.batch_size), w_y[{{}, t, {}}]:clone():view(opt.batch_size), e_y[{{}, t, {}}]:clone():view(opt.batch_size)})
+        {y[{{}, t, {}}]:clone():view(batch_size) , e_y[{{}, t, {}}]:clone():view(batch_size)})
       table.insert(drnn_state[t], doutput_t[1])
       table.insert(drnn_state[t], doutput_t[2])
-      table.insert(drnn_state[t], doutput_t[3])
       
       local dlst = clones.rnn[t]:backward({x[{{},t,{}}], e_x[{{},t,{}}], unpack(rnn_state[t-1])}, drnn_state[t])
       drnn_state[t-1] = {}
@@ -190,10 +209,10 @@ function ExternalMinibatchLoader_NextEventOfInterest:feval()
     ------------------------ misc ----------------------
     -- transfer final state to initial state (BPTT)
     init_state_global = rnn_state[#rnn_state] -- NOTE: I don't think this needs to be a clone, right?
-    -- grad_params:div(opt.seq_length) -- this line should be here but since we use rmsprop it would have no effect. Removing for efficiency
+    -- grad_params:div(len_seq) -- this line should be here but since we use rmsprop it would have no effect. Removing for efficiency
     -- clip gradient element-wise
     grad_params:clamp(-opt.grad_clip, opt.grad_clip)
-    
+  
     return loss, grad_params
 end
 

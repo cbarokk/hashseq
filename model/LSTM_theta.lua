@@ -2,8 +2,9 @@
 local LSTM_theta = {}
 function LSTM_theta.lstm()
   local rnn_size = opt.rnn_size
-  local num_weekly_slots = opt.num_weekly_slots
+  local num_time_slots = opt.num_time_slots
   local num_layers = opt.num_layers
+  local num_eoi = opt.num_eoi
   local num_events = opt.num_events
   local dropout = opt.dropout or 0
   
@@ -70,15 +71,11 @@ function LSTM_theta.lstm()
   
   if dropout > 0 then layer = nn.Dropout(dropout)(layer) end
   
-  local weekly_pred = nn.Linear(rnn_size, num_weekly_slots)(layer)
-  weekly_pred = nn.LogSoftMax()(weekly_pred)
-  table.insert(outputs, weekly_pred)
+  local time_pred = nn.Linear(rnn_size, num_time_slots)(layer)
+  time_pred = nn.LogSoftMax()(time_pred)
+  table.insert(outputs, time_pred)
   
-  local yearly_pred = nn.Linear(rnn_size, 52)(layer)
-  yearly_pred = nn.LogSoftMax()(yearly_pred)
-  table.insert(outputs, yearly_pred)
-  
-  local event_pred = nn.Linear(rnn_size, num_events)(layer)
+  local event_pred = nn.Linear(rnn_size, num_eoi)(layer)
   event_pred = nn.LogSoftMax()(event_pred)
   table.insert(outputs, event_pred)
   

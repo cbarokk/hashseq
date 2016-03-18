@@ -18,7 +18,9 @@ require 'nngraph'
 require 'optim'
 require 'lfs'
 require 'gnuplot'
+require 'unsup'
 
+require 'util.SequenceFactory'
 require 'util.misc'
 local ExternalMinibatchLoader_NextEvent = require 'util.ExternalMinibatchLoader_NextEvent'
 local ExternalMinibatchLoader_NextEventOfInterest = require 'util.ExternalMinibatchLoader_NextEventOfInterest'
@@ -33,14 +35,18 @@ cmd:text('Train a timestamped events model')
 cmd:text()
 cmd:text('Options')
 -- model params
-cmd:option('-rnn_size', 128, 'size of LSTM internal state')
-cmd:option('-num_layers', 2, 'number of layers in the LSTM')
-cmd:option('-num_weekly_slots', 10080, 'size of time vocabulary')
+cmd:option('-rnn_size', 1024, 'size of LSTM internal state')
+cmd:option('-num_layers', 1, 'number of layers in the LSTM')
+cmd:option('-horizon', 86400, 'number of seconds for time previsions, default to 1 day.')
+cmd:option('-num_time_slots', 288, 'divide the horizon into time slots, default to 288 (5mins).')
 cmd:option('-model', 'next_event_of_interest', 'next_event, next_event_of_interest or hashing')
 cmd:option('-rnn_unit', 'lstm', 'lstm,gru or rnn')
 cmd:option('-encoder_shape', '256,32', 'size of the hash codes')
 cmd:option('-theta_weight',1.0,'weight for loss function')
 cmd:option('-event_weight',1.0,'weight for loss function')
+cmd:option('-sequence_provider', 1,'which sequence provider to use, 1 for redis, 2 for synthetic')
+
+
 
 -- optimization
 cmd:option('-learning_rate',2e-3,'learning rate')
@@ -49,15 +55,13 @@ cmd:option('-learning_rate_decay_after',50,'number of epochs, before considering
 cmd:option('-learning_rate_decay_threshold',-1e-8,'maximum slope of 2nd derivative ')
 cmd:option('-decay_rate',0.95,'decay rate for rmsprop')
 cmd:option('-dropout',0,'dropout for regularization, used after each RNN hidden layer. 0 = no dropout')
-cmd:option('-seq_length',50,'number of timesteps to unroll for')
-cmd:option('-batch_size',50,'number of sequences to train on in parallel')
 cmd:option('-max_epochs',5000000,'number of full passes through the training data')
 cmd:option('-iterations_per_epoch',100,'number of iterations per epoch')
 cmd:option('-grad_clip',5,'clip gradients at this value')
 cmd:option('-init_from', '', 'initialize network parameters from checkpoint at this path')
 -- bookkeeping
 cmd:option('-seed',123,'torch manual random number generator seed')
-cmd:option('-save_every',500,'how many steps/minibatches between dumping a checkpoint')
+cmd:option('-save_every',10,'how many epochs between dumping a checkpoint')
 
 cmd:option('-print_every',1,'how many steps/minibatches between printing out the loss')
 cmd:option('-checkpoint_dir', 'cv', 'output directory where checkpoints get written')
@@ -72,6 +76,8 @@ cmd:text()
 -- parse input params
 opt = cmd:parse(arg)
 torch.manualSeed(opt.seed)
+
+factory_initialization()
 
 -- initialize cunn/cutorch for training on the GPU and fall back to CPU gracefully
 if opt.gpuid >= 0 then
@@ -118,19 +124,8 @@ if string.len(opt.init_from) > 0 then
     do_random_init = false
 else
     protos = opt.loader.create_rnn_units_and_criterion()
-    
 end
 
--- the initial state of the cell/hidden states
-init_state = {}
-for L=1,opt.num_layers do
-    local h_init = torch.zeros(opt.batch_size, opt.rnn_size)
-    if opt.gpuid >=0 then h_init = h_init:cuda() end
-    table.insert(init_state, h_init:clone())
-    if opt.rnn_unit == 'lstm' then
-        table.insert(init_state, h_init:clone())
-    end
-end
 
 -- ship the model to the GPU if desired
 if opt.gpuid >= 0 then
@@ -144,6 +139,7 @@ params, grad_params = model_utils.combine_all_parameters(protos.rnn)
 if do_random_init then
     params:uniform(-0.08, 0.08) -- small uniform numbers
 end
+print('number of parameters in the model: ' .. params:nElement())
 
 -- initialize the LSTM forget gates with slightly higher biases to encourage remembering in the beginning
 if opt.rnn_unit == 'lstm' then
@@ -158,18 +154,60 @@ if opt.rnn_unit == 'lstm' then
   end
 end
 
-print('number of parameters in the model: ' .. params:nElement())
--- make a bunch of clones after flattening, as that reallocates memory
-clones = {}
-for name,proto in pairs(protos) do
-    print('cloning ' .. name)
-    clones[name] = model_utils.clone_many_times(proto, opt.seq_length, not proto.parameters)
+
+
+init_states = {}
+init_state_global = {}
+  
+function set_init_state(batch_size)
+  -- the initial state of the cell/hidden states
+  local init_state = {}
+  for L=1,opt.num_layers do
+    local h_init = torch.zeros(batch_size, opt.rnn_size)
+    if opt.gpuid >=0 then h_init = h_init:cuda() end
+    table.insert(init_state, h_init:clone())
+    if opt.rnn_unit == 'lstm' then
+        table.insert(init_state, h_init:clone())
+    end
+  end
+  init_states[batch_size] = init_state
+  init_state_global[batch_size] = clone_list(init_state)
+end
+
+function get_init_state_global(batch_size)
+  if (not init_state_global[batch_size]) then
+    set_init_states(batch_size)
+  end
+  return init_state_global[batch_size]
+end
+
+function get_init_state(batch_size)
+  if (not init_states[batch_size]) then
+    set_init_state(batch_size)
+  end
+  return init_states[batch_size]
 end
 
 
--- do fwd/bwd and return loss, grad_params
-init_state_global = clone_list(init_state)
 
+-- make a bunch of clones after flattening, as that reallocates memory
+clones_table = {}
+function set_clones(seq_length)
+  if clones_table[seq_length] then return end
+  local clones = {}
+  for name,proto in pairs(protos) do
+    print('cloning ' .. name .. "_" .. seq_length)
+    clones[name] = model_utils.clone_many_times(proto, seq_length, not proto.parameters)
+  end
+  clones_table[seq_length] = clones
+end
+
+function get_clones(seq_length)
+  if (not clones_table[seq_length]) then
+    set_clones(seq_length)
+  end
+  return clones_table[seq_length]
+end
 
 -- start optimization here
 local train_losses = {}
@@ -219,37 +257,34 @@ for epoch = start_epoch, opt.max_epochs do
   monitor_losses[#monitor_losses+1] = accum_train_loss
   
   if #monitor_losses > 3 then
-    local y = torch.Tensor(monitor_losses)
-    local x = torch.Tensor(#monitor_losses,4):fill(1)
-    for i=1, x:size()[1] do
-      x[{i,1}] = i*i*i
-      x[{i,2}] = i*i
-      x[{i,3}] = i
+    local X = torch.Tensor(#monitor_losses,2):zero()
+    for i=1, X:size()[1] do
+      X[{i,1}] = i
+      X[{i,2}] = monitor_losses[i]
     end
     
-    local theta = normal_equations(x, y)
+    vv = PCA(X)
+  
+    local deltas = vv[{ {1,1} , {3,4} }][1]
+    local a = deltas[2]/deltas[1]
+    local M_point = vv[{ {1,1} , {1,2} }][1]
+    local b = M_point[2] - a*M_point[1]
+  
     local p_x = torch.linspace(1,#monitor_losses, #monitor_losses)
-    local p_y = p_x:clone():cmul(p_x):cmul(p_x):mul(theta[1]):add(p_x:clone():cmul(p_x):mul(theta[2])):add(p_x:clone():mul(theta[3])):add(theta[4])
+    local p_y = p_x:clone():mul(a):add(b) -- y = ax + b
     
-    --local first_derivative = p_x:clone():cmul(p_x):mul(3*theta[1]):add(p_x:clone():mul(2*theta[2])):add(theta[3])
-    --local second_derivative = p_x:clone():mul(6*theta[1]):add(2*theta[2])
-
-    current_slope = 6*theta[1]
+    current_slope = a
     slopes[#slopes+1] = current_slope
     gnuplot.figure('slopes')
     gnuplot.title('slopes ' .. opt.info)
     gnuplot.plot({torch.Tensor(slopes),'-'})
     
+    
     gnuplot.figure('monitor losses')
     gnuplot.title('monitor losses ' .. opt.info)
-    gnuplot.plot({"loss", torch.Tensor(monitor_losses),'-'},  {"theta", p_x, p_y,'-'})
+    gnuplot.plot({"loss", torch.Tensor(monitor_losses), '+'},{'PC1',vv[{ {1,1} , {} }],'v'},{'PC2',vv[{ {2,2} , {} }],'v'})
     
-    --[[
-    gnuplot.figure('derivatives')
-    gnuplot.title('derivatives ' .. opt.info)
-    gnuplot.plot({"1st", p_x, first_derivative,'-'}, {"2nd", p_x, second_derivative,'-'})
-      ]]--
-  
+    
     if #monitor_losses > opt.learning_rate_decay_after then
       if current_slope > opt.learning_rate_decay_threshold then
         decay_learning_rate = true
@@ -273,7 +308,7 @@ for epoch = start_epoch, opt.max_epochs do
   
   -- every now and then or on last iteration
   if epoch % opt.save_every == 0 then
-    local savefile = string.format('%s/model_past_%s_%s_%s_%s_%s_%s_epoch%.2f_%.8f.t7', opt.checkpoint_dir, opt.rnn_unit, opt.num_layers, opt.rnn_size, opt.encoder_shape, opt.theta_weight, opt.event_weight, epoch, accum_train_loss)
+    local savefile = string.format('%s/model_past_%s_%s_%s_%s_%s_epoch%.2f_%.8f.t7', opt.checkpoint_dir, opt.rnn_unit, opt.num_layers, opt.rnn_size, opt.theta_weight, opt.event_weight, epoch, accum_train_loss)
     print('saving checkpoint to ' .. savefile)
     local checkpoint = {}
     checkpoint.protos = protos

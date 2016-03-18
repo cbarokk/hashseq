@@ -46,6 +46,54 @@ function smooth_probs(probs, N)
   end)
 end
   
-function normal_equations(X, Y)
-  return torch.inverse(X:t()*X)*X:t()*Y
+function normal_equations(X, y)
+  return torch.inverse(X:t()*X)*X:t()*y
+end
+
+function timestamp2theta(timestamp, theta_size)
+  local theta = torch.DoubleTensor(theta_size):fill(0)
+  
+  local date = os.date("*t", timestamp)
+  
+  local sec = date['sec']
+  theta[1] = math.cos((2*math.pi)/60*sec) --cos_sec
+  theta[2] = math.sin((2*math.pi)/60*sec) --sin_sec
+  
+  local min = date['min']
+  theta[3] = math.cos((2*math.pi)/60*min) --cos_min
+  theta[4] = math.sin((2*math.pi)/60*min) --sin_min
+      
+  local hour = date['hour']
+  theta[5] = math.cos((2*math.pi)/24*hour) --cos_hour
+  theta[6] = math.sin((2*math.pi)/24*hour) --sin_hour
+      
+  local day = date['wday']-1
+  theta[7] = math.cos((2*math.pi)/7*day) --cos_day
+  theta[8] = math.sin((2*math.pi)/7*day) --sin_day
+  
+  return theta, date
+end
+
+function PCA(X)
+  local mean = torch.mean(X, 1) -- 1 x n
+  local m = X:size(1)
+  local Xm = X - torch.ones(m, 1) * mean
+  
+  Xm:div(math.sqrt(m - 1))
+  local v,s,_ = torch.svd(Xm:t())
+  
+  s:cmul(s) -- n
+
+  --[[
+  -- v: eigenvectors, s: eigenvalues of covariance matrix
+  local b = sys.COLORS.blue; n = sys.COLORS.none
+  print(b .. 'eigenvectors (columns):' .. n); print(v)
+  print(b .. 'eigenvalues (power/variance):' .. n); print(s)
+  print(b .. 'sqrt of the above (energy/std):' .. n); print(torch.sqrt(s))
+  ]]--
+  
+  local vv = v * torch.diag(torch.sqrt(s))
+  vv = torch.cat(torch.ones(2,1) * mean, vv:t())
+  return vv
+  
 end
