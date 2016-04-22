@@ -42,8 +42,13 @@ function LSTM_theta.lstm()
 
     end
     -- evaluate the input sums at once for efficiency
+    
+    x = nn.BatchNormalization(input_size_L)(x)
+    
     local i2h = nn.Linear(input_size_L, 4 * rnn_size)(x):annotate{name='i2h_'..L}
+    i2h = nn.BatchNormalization(4 * rnn_size)(i2h)
     local h2h = nn.Linear(rnn_size, 4 * rnn_size)(prev_h):annotate{name='h2h_'..L}
+    h2h = nn.BatchNormalization(4 * rnn_size)(h2h)
     local all_input_sums = nn.CAddTable()({i2h, h2h})
 
     local reshaped = nn.Reshape(4, rnn_size)(all_input_sums)
@@ -75,7 +80,7 @@ function LSTM_theta.lstm()
   time_pred = nn.LogSoftMax()(time_pred)
   table.insert(outputs, time_pred)
   
-  local event_pred = nn.Linear(rnn_size, num_eoi)(layer)
+  local event_pred = nn.Linear(rnn_size, num_events)(layer)
   event_pred = nn.LogSoftMax()(event_pred)
   table.insert(outputs, event_pred)
   

@@ -11,7 +11,6 @@ require 'nn'
 require 'nngraph'
 require 'lfs'
 
-require 'util.OneHot'
 require 'util.misc'
 
 cmd = torch.CmdLine()
