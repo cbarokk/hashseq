@@ -11,11 +11,16 @@ function loadSourceNames(path)
 end
 
 
-local function loadFile(path)
+local function loadFile(path, loadAllFile) 
   local f = io.input(path)
-  
-  local data, rest = f:read(BUFSIZE, "*line")
-  if rest then data = data .. rest .. '\n' end
+  local data = ""
+  while true do
+    local buf, rest = f:read(BUFSIZE, "*line")
+    if not buf then break end
+    data = data .. buf
+    if rest then data = data .. rest .. '\n' end
+    if (not loadAllFile) then break end
+  end
   
   lines={}
   for line in data:gmatch("[^\r\n]+") do 
@@ -27,7 +32,7 @@ local function loadFile(path)
 end
 
 function loadEvents(path, redis_client)
-  local lines = loadFile(path)
+  local lines = loadFile(path, true)
   for i=1, #lines do
     redis_client:sadd(opt.redis_prefix .. "-events", lines[i])
   end
@@ -62,7 +67,6 @@ local function splitLines2(lineTable, keep_k)
   
   for i=1, math.min(keep_k, #lineTable) do
     table.insert(tmp, string.split(lineTable[pos+i-1], ","))
-    
     tmp[i][2] = opt.event_mapping[tmp[i][2]]
   end
   return tmp
@@ -89,7 +93,7 @@ end
 
 function loadBatch(size, len_seq)
   local batch = {}
-  len_seq = len_seq + 1  
+  len_seq = len_seq + 1  -- remove this line when Axel has fixed the "timestamp, event" from all files
   while #batch < size do  
     local eoi = torch.random(1, #eois)
     local files = loadFile("2013.csv_eoi/" .. eois[eoi])
