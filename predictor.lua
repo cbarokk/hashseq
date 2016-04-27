@@ -19,6 +19,7 @@ cmd:text('Options')
 cmd:option('-seq_len',50,'number of timesteps to unroll for')
 cmd:option('-batch_size',50,'number of sequences to train on in parallel')
 cmd:option('-redis_prefix', '', 'redis key name prefix, where to read train/validation/events data')
+cmd:option('-window_size',60,'width of window for weighted averaging of time predictions')
 
 cmd:option('-init_from', '', 'initialize network parameters from checkpoint at this path')
 cmd:option('-seed',123,'random number generator\'s seed')
@@ -64,7 +65,8 @@ end
 print('loading the model from checkpoint ' .. opt.init_from)
 checkpoint = torch.load(opt.init_from)
 protos = checkpoint.protos
---protos.rnn:evaluate() -- put in eval mode so that BatchNormalization works properly
+
+opt.num_layers = checkpoint.opt.num_layers
 
 -- create the data loader class  
 local loader = ExternalMinibatchLoader_NextEvent.create()
@@ -92,31 +94,40 @@ if opt.gpuid >= 0 then
 end
 
 print ("starting predictor")
+protos.rnn:evaluate() -- put in eval mode so that BatchNormalization and DropOut works properly
+--protos.rnn:training() -- put in eval mode so that BatchNormalization and DropOut works properly
 
+batch_type = "testing" -- only look at test data
 while true do
   -- fetch a batch
   local x, y, e_x, e_y = loader:next_batch()
   current_state = init_state()
   -- forward pass
-  local lst
+  local lst, last_pred
   for t=1, opt.seq_len do
-    --print ("t", t, "e_x", e_x)
+    if t > 1 then
+      print ("e_x[t]", opt.event_inv_mapping[e_x[t][1]], opt.event_inv_mapping[last_pred])
+    else 
+      print ("e_x[t]", opt.event_inv_mapping[e_x[t][1]])
+    end
+    
     lst = protos.rnn:forward{x[t], e_x[t], unpack(current_state)}
+   
     local e_y_probs = lst[#lst]:clone():exp():double()
+    local e_y_probs_sorted, e_y_probs_idx = torch.sort(e_y_probs, 2, true) -- sort along 2nd dim, true = in descending order
     
-    local _, idx_max  = e_y_probs:max(2)
-    print ("e_x[t]", opt.event_inv_mapping[e_x[t][1]], opt.event_inv_mapping[idx_max[1][1]])
-  
-    --print ("lst[#lst]", e_y_probs)
-    --asd:asd()
+    local y_probs = lst[#lst-1]:clone():exp():double()
+    smooth_probs(y_probs, opt.window_size)
     
-  
-  if e_x[t][1] > 1 then
-      display_uncertainty(lst[#lst-1], y[t], lst[#lst], e_y[t])
-      sys.sleep(1)
-  end
-  
-     current_state = {}
+    -- The predictions for the events are in e_y_probs_sorted (the indices are in e_y_probs_idx) 
+    -- The predictions for the time slots are in y_probs (not sorted)
+    
+    
+    last_pred = e_y_probs_idx[1][1]
+    if e_x[t][1] > 1 then
+      display_uncertainty(y_probs, y[t], e_y_probs, e_y[t])
+    end
+    current_state = {}
     for i=1,state_size do table.insert(current_state, lst[i]) end
   end
   collectgarbage()

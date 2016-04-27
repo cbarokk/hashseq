@@ -1,5 +1,6 @@
 require 'lfs'
-local BUFSIZE = 2^13     -- 8K
+local BUFSIZE = 2^14     -- 16K
+
 local eois = {}
 
 function loadSourceNames(path)
@@ -72,9 +73,7 @@ local function splitLines2(lineTable, keep_k)
   return tmp
 end
 
-local function insertProbes(seq, percentage)
-  local len_seq = math.ceil(#seq*percentage)
-
+local function insertProbes(seq, len_seq)
   while #seq < len_seq do
     local pos = torch.random(1, #seq-1)
     local t = torch.random(seq[pos][1], seq[pos+1][1])
@@ -94,10 +93,16 @@ end
 function loadBatch(size, len_seq)
   local batch = {}
   len_seq = len_seq + 1  -- remove this line when Axel has fixed the "timestamp, event" from all files
+
   while #batch < size do  
     local eoi = torch.random(1, #eois)
     local files = loadFile("2013.csv_eoi/" .. eois[eoi])
-    local file = torch.random(1, #files)
+    local file
+    if batch_type == "training" then
+      file = torch.random(1, math.floor(0.7*#files))
+    else
+      file = torch.random(math.ceil(0.7*#files), #files)
+    end
     --print ( "2013.csv_sources/" .. files[file])
     local seq = loadFile("2013.csv_sources/" .. files[file])
     
@@ -107,7 +112,7 @@ function loadBatch(size, len_seq)
       --  seq = splitLines(seq, math.ceil(len_seq*1.2))
       --else
         seq = splitLines2(seq, len_seq)
-        --insertProbes(seq, 1.2)
+        --insertProbes(seq, len_seq)
       --end
       --print ("seq", seq)
       table.insert(batch, seq)
@@ -115,7 +120,6 @@ function loadBatch(size, len_seq)
       table.remove(files, file)
     end
   end
-  --insertProbes(batch)
   --formatBatch(batch)
   --print ("batch", batch)
   collectgarbage()

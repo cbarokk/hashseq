@@ -1,3 +1,4 @@
+--require 'util.MyBatchNormalization'
 
 local LSTM_theta = {}
 function LSTM_theta.lstm()
@@ -20,35 +21,40 @@ function LSTM_theta.lstm()
 
   local x, input_size_L
   local outputs = {}
+  local embedings_size = 100
+
   for L = 1,num_layers do
     -- c,h from previos timesteps
     local prev_h = inputs[L*2+2]
     local prev_c = inputs[L*2+1]
     -- the input to this layer
     if L == 1 then 
-      local theta_x = inputs[1]
+      local x_slot = inputs[1]
       local e_x = inputs[2]
-      local embedings_size = 100
+      
+      local x_embedings = nn.LookupTable(num_time_slots, embedings_size)(x_slot):annotate{name='emb_x'}
+      x_embedings = nn.Reshape(embedings_size)(x_embedings)
+
       local e_embedings = nn.LookupTable(num_events, embedings_size)(e_x):annotate{name='emb_e'}
       e_embedings = nn.Reshape(embedings_size)(e_embedings)
       
-      x = nn.JoinTable(2)({theta_x, e_embedings}) 
-      input_size_L = theta_size+embedings_size
+      x = nn.JoinTable(2)({x_embedings, e_embedings}) 
+      input_size_L = 2*embedings_size
       
     else 
       x = outputs[(L-1)*2] 
+      --x = MyBatchNormalization(input_size_L)(x):annotate{name='bn_' .. L}
       if dropout > 0 then x = nn.Dropout(dropout)(x) end -- apply dropout, if any
       input_size_L = rnn_size
 
     end
     -- evaluate the input sums at once for efficiency
     
-    x = nn.BatchNormalization(input_size_L)(x)
     
     local i2h = nn.Linear(input_size_L, 4 * rnn_size)(x):annotate{name='i2h_'..L}
-    i2h = nn.BatchNormalization(4 * rnn_size)(i2h)
+    --i2h = MyBatchNormalization(4 * rnn_size)(i2h):annotate{name='bn_i2h_' .. L}
     local h2h = nn.Linear(rnn_size, 4 * rnn_size)(prev_h):annotate{name='h2h_'..L}
-    h2h = nn.BatchNormalization(4 * rnn_size)(h2h)
+    --h2h = MyBatchNormalization(4 * rnn_size)(h2h):annotate{name='bn_h2h_' .. L}
     local all_input_sums = nn.CAddTable()({i2h, h2h})
 
     local reshaped = nn.Reshape(4, rnn_size)(all_input_sums)
