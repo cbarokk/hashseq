@@ -29,17 +29,13 @@ function LSTM_theta.lstm()
     local prev_c = inputs[L*2+1]
     -- the input to this layer
     if L == 1 then 
-      local x_slot = inputs[1]
-      local e_x = inputs[2]
-      
-      local x_embedings = nn.LookupTable(num_time_slots, embedings_size)(x_slot):annotate{name='emb_x'}
-      x_embedings = nn.Reshape(embedings_size)(x_embedings)
-
-      local e_embedings = nn.LookupTable(num_events, embedings_size)(e_x):annotate{name='emb_e'}
+      theta_x = inputs[1]
+      e_x = inputs[2]
+      e_embedings = nn.LookupTable(num_events, embedings_size)(e_x):annotate{name='emb_e'}
       e_embedings = nn.Reshape(embedings_size)(e_embedings)
       
-      x = nn.JoinTable(2)({x_embedings, e_embedings}) 
-      input_size_L = 2*embedings_size
+      x = nn.JoinTable(2)({theta_x, e_embedings}) 
+      input_size_L = theta_size+embedings_size
       
     else 
       x = outputs[(L-1)*2] 
